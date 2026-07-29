@@ -1,0 +1,30 @@
+# --- Build output ---
+build/
+build-*/
+cmake-build-*/
+
+# CMake stragglers (only if a configure is ever run outside build/)
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+
+# --- Compiler / toolchain intermediates ---
+*.o
+*.d
+*.su
+*.lst
+
+# NOTE: .elf/.bin/.hex/.map are NOT ignored globally on purpose — they only ever
+# land in build/ (already ignored). If a release process later checks in
+# qualified artifacts, do it under an explicit path, not by un-ignoring these.
+
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.vscode/
+.idea/
+
+# --- Vendored HAL/CMSIS and generated MicroCANopen EDS files are tracked on
+#     purpose (see BUILD_NOTES.md); do not add vendor/ or MCO_CiA401__User/ here.

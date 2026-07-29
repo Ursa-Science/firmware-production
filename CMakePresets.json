@@ -1,0 +1,19 @@
+{
+  "version": 3,
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "All URSA CANopen slave modules",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi-gcc.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "default", "configurePreset": "default" },
+    { "name": "valve",   "configurePreset": "default", "targets": ["valve"] },
+    { "name": "pump",    "configurePreset": "default", "targets": ["pump"] },
+    { "name": "phtemp",  "configurePreset": "default", "targets": ["phtemp"] }
+  ]
+}
