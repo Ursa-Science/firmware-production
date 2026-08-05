@@ -54,15 +54,17 @@ typedef enum {
  *          MS1=1, MS2=1 → 16 µsteps  (UART addr 0x03)
  *        MicroPlyer internally interpolates to 256 regardless.
  *
- *        Phase 2 UART: MICROSTEP_1 (full step) via CHOPCONF.mres=8.
+ *        CURRENT CONFIG (NEMA 17 direct drive): MICROSTEP_8 via CHOPCONF.mres=5.
  *        With MSTEP_REG_SELECT=1 in GCONF, MS pins become UART address only.
- *        MS1=0, MS2=0 kept for UART slave address 0x00.
- *        INTPOL=1: MicroPlyer interpolates full-step → 256 internally.
+ *        MS1=0, MS2=0 kept for UART slave address 0x00 — which is also the
+ *        pin-mode encoding for 1/8, so if the UART config is ever lost the chip
+ *        falls back to the SAME resolution and the step math still holds.
+ *        INTPOL=1: MicroPlyer interpolates 1/8 → 256 internally.
  */
 typedef enum {
-	MICROSTEP_1 = 1,     // UART-configured: CHOPCONF.mres=8 full step (Phase 2)
+	MICROSTEP_1 = 1,     // UART-configured: CHOPCONF.mres=8 full step
 	MICROSTEP_2 = 2,        // UART-configured: CHOPCONF.mres=7
-	MICROSTEP_8 = 8,        // MS1=0, MS2=0 — TMC2209 default, lowest via pins
+	MICROSTEP_8 = 8,        // CHOPCONF.mres=5; also MS1=0/MS2=0 in pin mode
 	MICROSTEP_16 = 16,       // MS1=1, MS2=1
 	MICROSTEP_32 = 32,       // MS1=1, MS2=0
 	MICROSTEP_64 = 64        // MS1=0, MS2=1
@@ -93,8 +95,14 @@ typedef struct {
 } Stepper_Status_t;
 
 /* Exported constants --------------------------------------------------------*/
-#define STEPPER_STEPS_PER_REV       1600  // WPX-1 with 1:8 gear ratio (200 motor steps × 8)
-#define STEPPER_MAX_SPEED_RPM       120    // Maximum safe RPM (tested 12/30/2025)
+/* 17HS19-2004S1 NEMA 17, direct drive (no gearbox): 1.8°/step = 200 full steps
+ * per pump revolution. Always used as STEPPER_STEPS_PER_REV × microstep, so with
+ * MICROSTEP_8 the product is 200 × 8 = 1600 pulses/rev — numerically identical to
+ * the WPX-1's 200 × 8 gearbox. Every ARR/ramp constant below keeps its meaning. */
+#define STEPPER_STEPS_PER_REV       200
+#define STEPPER_MAX_SPEED_RPM       120    // Maximum safe RPM — carried over from the
+                                           // WPX-1 (tested 12/30/2025); NOT yet
+                                           // re-established for the NEMA 17 (Phase 5)
 #define STEPPER_TIMEOUT_MS          5000  // 5 second timeout (was 30s)
 
 /* PWM and Current Control Constants */

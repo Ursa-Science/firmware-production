@@ -1,4 +1,4 @@
-# CMake Build Guide — URSA CANopen Slave Modules
+e# CMake Build Guide — URSA CANopen Slave Modules
 
 A step-by-step explanation of how the firmware for the valve, pump, and pH/temp
 modules is built with CMake — **what** each piece configures and **why** it is

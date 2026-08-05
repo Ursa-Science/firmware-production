@@ -98,6 +98,7 @@ extern "C" {
 #define CHOPCONF_HEND_MASK      0x0F
 #define CHOPCONF_TBL_SHIFT      15  /* Blank time (bits 15-16)     */
 #define CHOPCONF_TBL_MASK       0x03
+#define CHOPCONF_VSENSE         (1 << 17)  /* 0 = V_fs 325mV, 1 = V_fs 180mV */
 #define CHOPCONF_MRES_SHIFT     24  /* Microstep resolution (bits 24-27) */
 #define CHOPCONF_MRES_MASK      0x0F
 #define CHOPCONF_INTPOL         (1 << 28)  /* MicroPlyer interpolation  */
@@ -142,6 +143,99 @@ extern "C" {
 #define DRV_STATUS_SG_MASK      0x000003FF  /* StallGuard result (bits 0-9) */
 
 /* -------------------------------------------------------------------------- */
+/*  Chopper Mode Selection                                                    */
+/* -------------------------------------------------------------------------- */
+/*
+ * SPREADCYCLE  — current-mode hysteresis chopper. Audible, but regulates fast
+ *                and holds through abrupt load steps. A peristaltic head is a
+ *                cyclically pulsating load (roller occlusion) with a breakaway
+ *                spike from standstill, and with the WPX-1 gearbox gone the
+ *                motor sees those spikes undamped. This is the safe default and
+ *                the one to use for the torque go/no-go.
+ *
+ * STEALTHCHOP  — voltage-mode PWM. Near-silent and slightly cooler at low
+ *                speed, but its regulator responds more slowly to load steps.
+ *                Requires a run-in move for pwm_autoscale/pwm_autograd to
+ *                converge; the firmware does NOT currently make one, so treat
+ *                a fresh boot as untuned. NOTE: StallGuard4 on the TMC2209 is
+ *                specified for StealthChop — jam / dry-run detection needs it.
+ *
+ * HYBRID       — StealthChop below TMC_TPWMTHRS, SpreadCycle above (chip
+ *                switches automatically on measured TSTEP). Quiet at low flow,
+ *                full dynamic torque at high flow. Note this puts StealthChop
+ *                where breakaway lives, so stall-test it like any other mode.
+ *
+ * PWMCONF (0x70) is deliberately left at its reset default (0xC10D0024), which
+ * already has pwm_autoscale and pwm_autograd enabled — no write needed.
+ */
+#define TMC_CHOPPER_SPREADCYCLE   0
+#define TMC_CHOPPER_STEALTHCHOP   1
+#define TMC_CHOPPER_HYBRID        2
+
+#ifndef TMC_CHOPPER_MODE
+#define TMC_CHOPPER_MODE        TMC_CHOPPER_SPREADCYCLE
+#endif
+
+/*
+ * TPWMTHRS (0x13) — StealthChop upper velocity, in TSTEP units. StealthChop is
+ * active while TSTEP >= TPWMTHRS (i.e. at LOW step rates).
+ *
+ *   TPWMTHRS = f_CLK / step_rate_at_crossover      (f_CLK = 12 MHz internal)
+ *   step_rate = rpm * pulses_per_rev / 60
+ *
+ * Default below crosses over at ~40 RPM with 1600 pulses/rev:
+ *   step_rate = 40 * 1600 / 60 = 1067 Hz  ->  12e6 / 1067 = 11250
+ *
+ * Only used when TMC_CHOPPER_MODE == TMC_CHOPPER_HYBRID. 20-bit field.
+ */
+#ifndef TMC_TPWMTHRS
+#define TMC_TPWMTHRS            11250u
+#endif
+
+/* -------------------------------------------------------------------------- */
+/*  Motor Current Configuration — 17HS19-2004S1 NEMA 17                       */
+/* -------------------------------------------------------------------------- */
+/*
+ * BIGTREETECH TMC2209 V1.3: R_sense = 110 mOhm, vsense = 0 (V_fs = 325 mV).
+ *
+ *   I_peak = (CS+1)/32 * 0.325 V / (0.11 + 0.02 Ohm) = (CS+1)/32 * 2.5 A
+ *   I_rms  = I_peak / sqrt(2)
+ *
+ * Driver conduction loss ~= 2 * I_rms^2 * 0.4 Ohm (both phases, HS+LS R_DSon).
+ * It is QUADRATIC in current — halving the setting quarters the driver heat.
+ *
+ *   CS  | I_peak | I_rms  | driver | motor (1.4 Ohm)
+ *   31  | 2.50 A | 1.77 A | 2.50 W | 8.8 W   <- previous setting, overheated
+ *   22  | 1.80 A | 1.27 A | 1.29 W | 4.5 W   <- IRUN below (90% of 2.0 A rating)
+ *   15  | 1.25 A | 0.88 A | 0.63 W | 2.2 W
+ *    8  | 0.70 A | 0.50 A | 0.20 W | 0.7 W   <- IHOLD below
+ *
+ * IRUN is a STARTING point sized from the motor's 2.0 A rating, not from
+ * measured demand. The nameplate is a thermal limit, not a requirement — walk
+ * IRUN down until the pump stalls, then back off ~30%. This head is expected to
+ * need well under 1 A rms.
+ *
+ * IHOLD is deliberately lower than the 50%-of-IRUN rule of thumb: an instrument
+ * sits energized between doses, standstill has no back-EMF and no airflow, and
+ * a peristaltic head resists back-driving through tube occlusion, so very
+ * little holding torque is actually required.
+ *
+ * If the pump settles below ~1.3 A peak, consider vsense = 1 (V_fs 180 mV):
+ * it caps peak near 1.38 A but gives finer granularity and halves sense-resistor
+ * dissipation. Keep vsense = 0 while IRUN needs the full range.
+ */
+#define TMC_IRUN_SETTING        22u  /* 1.80 A peak / 1.27 A rms */
+#define TMC_IHOLD_SETTING        8u  /* 0.70 A peak / 0.50 A rms */
+#define TMC_IHOLDDELAY_SETTING   6u  /* smooth run->hold ramp    */
+
+/*
+ * TPOWERDOWN (0x11) — delay from standstill to IHOLD, in units of
+ * 2^18 / 12 MHz = 21.8 ms. 20 -> ~0.44 s. Written explicitly rather than left
+ * at the reset default so standstill heating is deterministic.
+ */
+#define TMC_TPOWERDOWN_SETTING  20u
+
+/* -------------------------------------------------------------------------- */
 /*  Return Codes                                                              */
 /* -------------------------------------------------------------------------- */
 typedef enum {
@@ -150,7 +244,10 @@ typedef enum {
 	TMC2209_ERR_CRC, /* CRC mismatch on read reply          */
 	TMC2209_ERR_VERIFY, /* IFCNT or readback verification fail */
 	TMC2209_ERR_NOT_INIT, /* Init not called                     */
-	TMC2209_ERR_SMOKE_TEST /* Smoke test read failed at init      */
+	TMC2209_ERR_SMOKE_TEST /* RETIRED — no longer returned; kept so the
+	 front end's OD 0x2500 status mapping does
+	 not shift. Address-probe failure now
+	 returns TMC2209_ERR_UART_RX.            */
 } TMC2209_Status_t;
 
 /* -------------------------------------------------------------------------- */
@@ -164,7 +261,10 @@ typedef enum {
 	TMC2209_INIT_STEP_IHOLD_WRITE,
 	TMC2209_INIT_STEP_GCONF_READBACK,
 	TMC2209_INIT_STEP_CHOPCONF_READBACK,
-	TMC2209_INIT_STEP_COMPLETE
+	TMC2209_INIT_STEP_COMPLETE,
+	/* Appended AFTER COMPLETE on purpose: OD 0x2501 exposes this value, and
+	 * inserting in the middle would renumber every step the front end knows. */
+	TMC2209_INIT_STEP_TIMING_WRITE /* TPOWERDOWN / TPWMTHRS */
 } TMC2209_InitStep_t;
 
 /* -------------------------------------------------------------------------- */
@@ -194,11 +294,13 @@ typedef struct {
 	bool preamble_tx_ok; /* Did TransmitDirect succeed?         */
 	uint32_t isr_after_preamble; /* ISR after preamble write            */
 
-	/* Smoke test per-attempt diagnostics */
+	/* Per-address diagnostics from the IFCNT address-resolution probe */
 	TMC2209_DiagAttempt_t attempt[TMC_DIAG_MAX_ATTEMPTS];
 
 	/* Init mode */
-	bool blind_fallback; /* true = RX dead, used blind writes   */
+	bool config_verified; /* true = every write IFCNT-confirmed + read back */
+	bool blind_fallback; /* true = verification failed, wrote unverified   */
+	uint8_t config_baud_div; /* BRR multiplier used (1 = 115200, 12 = ~9600)  */
 
 	/* MS1/MS2 pin state at init time */
 	uint8_t ms1_level; /* GPIO read of MS1 pin (0 or 1)       */
@@ -209,20 +311,23 @@ typedef struct {
 	uint32_t gpioa_moder; /* GPIOA MODER (pin modes)             */
 	uint32_t gpioa_afrl; /* GPIOA AFRL (AF selection 0-7)       */
 
-	/* GCONF read-back after writes (verified path only; RX must work) */
-	bool gconf_readback_ok; /* true = GCONF read back successfully  */
-	uint32_t gconf_readback; /* actual GCONF value read after writes */
+	/* Register read-back after writes (RX must work) */
+	bool gconf_readback_ok; /* true = GCONF read back successfully     */
+	uint32_t gconf_readback; /* actual GCONF value read after writes    */
+	bool chopconf_readback_ok; /* true = CHOPCONF read back successfully  */
+	uint32_t chopconf_readback; /* actual CHOPCONF value read after writes */
 
-	/* Push-pull RX isolation probe (runs only when smoke read failed) */
-	bool pp_echo_ok; /* true = >=1 byte echoed under push-pull */
-	uint8_t pp_echo_count; /* bytes echoed back (0-4) at clean levels */
+	/* IHOLD_IRUN is a WRITE-ONLY register on the TMC2209 — it cannot be read
+	 * back, so an IFCNT-confirmed write is the only proof of the run/hold
+	 * current available. */
+	bool ihold_write_ok; /* true = IHOLD_IRUN write IFCNT-confirmed */
+	bool timing_write_ok; /* true = TPOWERDOWN (+TPWMTHRS) IFCNT-confirmed */
 
-	/* GPIO bit-bang loopback (PA2 out → PA3 in, bypasses USART) */
-	bool bb_tracks; /* true = PA3 tracked PA2 (pin+wire good)  */
-	uint8_t bb_pa3_high; /* PA3 IDR while PA2 driven HIGH (expect 1) */
-	uint8_t bb_pa3_low; /* PA3 IDR while PA2 driven LOW  (expect 0) */
+	/* DRV_STATUS sampled at the end of init (motor at standstill) */
+	bool drv_status_ok; /* true = DRV_STATUS read back successfully */
+	uint32_t drv_status; /* raw DRV_STATUS (0x6F)                    */
 
-	/* Address sweep (half-duplex): which UART address the TMC replied on */
+	/* Address resolution: which UART address answered an IFCNT read */
 	bool addr_found; /* true = a 0-3 address responded          */
 	uint8_t resolved_addr; /* the responding TMC UART address (0-3)   */
 } TMC2209_Diag_t;
@@ -233,12 +338,17 @@ typedef struct {
 
 /**
  * @brief  Initialize TMC2209 via UART on USART2
- * @note   Call BEFORE Log_Init(). Uses direct register-level USART2 TX
+ * @note   Call BEFORE Log_Init(). Uses direct register-level USART2 TX/RX
  *         to write TMC2209 registers. Does NOT modify USART2 config or
  *         HAL handle.
- *         Configures: SpreadCycle, 2-microstep via register, run current,
- *         and disables PDN standby.
- * @retval TMC2209_OK on success, error code on failure
+ *         Configures: SpreadCycle, microstep resolution via CHOPCONF.MRES,
+ *         run/hold current, and disables PDN standby.
+ * @note   Every write is IFCNT-confirmed and GCONF/CHOPCONF are read back.
+ *         TMC2209_OK means the CHIP confirmed the configuration — it is not
+ *         a "datagrams were transmitted" status. On failure the config is
+ *         still written unverified so the pump runs for diagnosis, but the
+ *         returned status and diag_data.blind_fallback say so.
+ * @retval TMC2209_OK on confirmed success, error code on failure
  */
 TMC2209_Status_t TMC2209_Init(void);
 

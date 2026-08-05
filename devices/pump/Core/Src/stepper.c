@@ -82,9 +82,12 @@ typedef struct {
 
 // ABSOLUTE MINIMUM START ARR FLOOR
 // Clamp start ARR so motor ALWAYS begins from a safe low speed.
-// ARR=2000 → step rate 500 Hz → motor shaft ~9.4 RPM (1600 half-steps/rev)
-// → safe pull-in under any pump load. All speeds above ~18 RPM start from
-// the same safe speed, then ramp up via the proportional acceleration.
+// ARR=2000 → step rate 500 µsteps/s → pump shaft ~18.75 RPM (1600 µsteps/rev)
+// → intended as a safe pull-in speed under pump load. All speeds above that
+// start here, then ramp up via the AVR446 acceleration.
+// (Corrected 2026-08-05: the old comment said "~9.4 RPM (1600 half-steps/rev)"
+// — wrong on both counts; 500/1600 rev/s = 18.75 RPM, and they are not half
+// steps. NOT yet re-validated as a pull-in speed for the direct-drive NEMA 17.)
 #define ACCEL_START_ARR_MIN     2000
 
 
@@ -153,7 +156,7 @@ bool Stepper_Init(void) {
 	// Initialize control structure
 	stepper.state = STEPPER_IDLE;
 	stepper.direction = STEPPER_DIR_CW;
-	stepper.microstep = MICROSTEP_1; // TMC2209: CHOPCONF.MRES=8 (full step) via UART write, INTPOL=1 (256 internal interpolation)
+	stepper.microstep = MICROSTEP_8; // TMC2209: CHOPCONF.MRES=5 (1/8 µstep) via UART write, INTPOL=1 (256 internal interpolation)
 	stepper.speed_rpm = SPEED_NORMAL_RPM;
 	stepper.current_position = 0;
 	stepper.steps_remaining = 0;
@@ -165,7 +168,7 @@ bool Stepper_Init(void) {
 	stepper.accel_remainder = 0;
 
 	// Initialize PWM control
-	stepper.pwm_control.arr_value = TIMER_ARR(SPEED_NORMAL_RPM, MICROSTEP_1);
+	stepper.pwm_control.arr_value = TIMER_ARR(SPEED_NORMAL_RPM, MICROSTEP_8);
 	stepper.pwm_control.duty_percent = PWM_DUTY_DEFAULT;
 
 	// DEFERRED STOP: Initialize stop_pending flag
@@ -180,8 +183,10 @@ bool Stepper_Init(void) {
 	/* TMC2209: MS1=0, MS2=0 → UART slave address 0x00.
 	 * MSTEP_REG_SELECT=1 in GCONF: MS pins are address-only, CHOPCONF.MRES
 	 * controls microstepping. UART writes verified via IFCNT.
-	 * Firmware uses MICROSTEP_1 (full step) for all step rate calculations. */
-	Stepper_ConfigureMicrostepPins(MICROSTEP_1);
+	 * Firmware uses MICROSTEP_8 (1/8 µstep) for all step rate calculations —
+	 * 200 full steps × 8 = 1600 pulses per pump rev. MS1=0/MS2=0 is also the
+	 * pin encoding for 1/8, so a lost UART config lands on the same resolution. */
+	Stepper_ConfigureMicrostepPins(MICROSTEP_8);
 
 	// Configure timer for PWM generation
 	__HAL_TIM_SET_PRESCALER(&htim1, TIMER_PRESCALER);
@@ -194,7 +199,7 @@ bool Stepper_Init(void) {
 	TIM1->EGR = TIM_EGR_UG;
 
 	// Set initial speed from default RPM
-	uint32_t init_arr = TIMER_ARR(SPEED_NORMAL_RPM, MICROSTEP_1);
+	uint32_t init_arr = TIMER_ARR(SPEED_NORMAL_RPM, MICROSTEP_8);
 	stepper.current_arr = init_arr;
 	stepper.target_arr = init_arr;
 	stepper.pwm_control.arr_value = init_arr;
@@ -1180,15 +1185,20 @@ void Stepper_PrintStepRateDiagnostics(void) {
 					"  ANALYSIS: Step rate matches expected - TIMER IS CORRECT");
 			DBG_PRINT(STEPPER,
 					"            If motor speed is still wrong, issue is MECHANICAL or MICROSTEPPING");
+		/* NOTE: this ratio compares COMMANDED vs MEASURED timer pulse rate.
+		 * It says nothing about the driver's CHOPCONF.MRES — the TMC2209
+		 * consumes one pulse per microstep either way. A non-unity ratio here
+		 * is a timer/ISR problem, not a microstepping problem. (The old labels
+		 * claimed otherwise and would send you chasing MRES for a timer bug.) */
 		} else if (ratio_x100 > 700 && ratio_x100 < 900) {
 			DBG_PRINT(STEPPER,
-					"  ANALYSIS: ~8x slower - LIKELY 1/8 MICROSTEPPING ACTIVE");
+					"  ANALYSIS: ~8x fewer pulses than commanded - TIMER/ISR fault");
 		} else if (ratio_x100 > 150 && ratio_x100 < 250) {
 			DBG_PRINT(STEPPER,
-					"  ANALYSIS: ~2x slower - LIKELY HALF STEPPING ACTIVE");
+					"  ANALYSIS: ~2x fewer pulses than commanded - TIMER/ISR fault");
 		} else if (ratio_x100 > 350 && ratio_x100 < 450) {
 			DBG_PRINT(STEPPER,
-					"  ANALYSIS: ~4x slower - LIKELY QUARTER STEPPING ACTIVE");
+					"  ANALYSIS: ~4x fewer pulses than commanded - TIMER/ISR fault");
 		} else {
 			DBG_PRINT(STEPPER,
 					"  ANALYSIS: Unexpected ratio - INVESTIGATE TIMER OR INTERRUPT");

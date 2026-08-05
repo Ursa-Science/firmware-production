@@ -331,10 +331,13 @@ int main(void)
   MX_IWDG_Init();
   /* USER CODE BEGIN 2 */
 
-	/* Configure TMC2209 via direct register-level USART2 TX BEFORE any
+	/* Configure TMC2209 via direct register-level USART2 TX/RX BEFORE any
 	 * debug output.  Does NOT modify USART2 config or HAL handle.
-	 * Writes GCONF (SpreadCycle), CHOPCONF (2-microstep), IHOLD_IRUN,
-	 * and disables PDN standby. */
+	 * Writes GCONF (SpreadCycle, MSTEP_REG_SELECT, PDN standby off),
+	 * CHOPCONF (microstep resolution) and IHOLD_IRUN (run/hold current),
+	 * each IFCNT-confirmed, then reads GCONF/CHOPCONF back.
+	 * TMC2209_OK means the CHIP confirmed the config, not merely that
+	 * datagrams were transmitted. */
 	TMC2209_Status_t tmc_status = TMC2209_Init();
 
 	/* Store TMC2209 init results in process image for SDO readback.
@@ -372,43 +375,53 @@ int main(void)
 		DBG_PRINT(GENERAL, "Firmware: %s", FIRMWARE_VERSION);
 		if (tmc_status == TMC2209_OK) {
 			const TMC2209_Diag_t *drb = TMC2209_GetDiagnostics();
-			if (drb->blind_fallback) {
-				DBG_PRINT(GENERAL,
-						"TMC2209 init: OK (write-only; 9600-baud config + 4x auto-baud train + push-pull 3x sweep; not read-verified)");
-			} else {
-				DBG_PRINT(GENERAL, "TMC2209 init: OK (RX verified)");
-			}
-			if (drb->gconf_readback_ok) {
-				DBG_PRINT(GENERAL,
-						"  GCONF readback=0x%08lX (target 0x000001C4) %s",
-						(unsigned long )drb->gconf_readback,
-						(drb->gconf_readback == 0x000001C4) ?
-								"MATCH" : "MISMATCH");
-			} else {
-				DBG_PRINT(GENERAL, "  GCONF readback unavailable");
-			}
 			DBG_PRINT(GENERAL,
-					"  CHOPCONF target=0x18010053 IHOLD_IRUN target=0x00061F10");
-		} else if (tmc_status == TMC2209_ERR_SMOKE_TEST) {
-			const TMC2209_Diag_t *dpb = TMC2209_GetDiagnostics();
-			DBG_ERROR(GENERAL,
-					"TMC2209 init: BLIND MODE — RX read FAILED; config UNVERIFIED");
-			DBG_ERROR(GENERAL,
-					"  Blind-wrote GCONF/CHOPCONF/IHOLD_IRUN (no read-back). SpreadCycle NOT confirmed — motor may still run.");
-			DBG_ERROR(GENERAL,
-					"  RX probe (push-pull loopback): echo=%u/4 -> %s",
-					dpb->pp_echo_count,
-					dpb->pp_echo_ok ?
-							"RX WORKS — open-drain level marginal (try stronger R12)" :
-							"NO ECHO — USART2 RX config/firmware bug (not levels)");
-			DBG_ERROR(GENERAL, "  GPIO bit-bang: PA3 high=%u low=%u -> %s",
-					dpb->bb_pa3_high, dpb->bb_pa3_low,
-					dpb->bb_tracks ?
-							"PIN+WIRE OK — fault is in USART2 RX peripheral path" :
-							"PA3 NOT tracking node — pin/solder/silicon issue");
-			DBG_ERROR(GENERAL,
-					"  PA3 cfg: AFRL=0x%08lX (PA3 nibble want 7) CR2=0x%08lX (swap b15/rxinv b16)",
-					(unsigned long )dpb->gpioa_afrl, (unsigned long )dpb->cr2);
+					"TMC2209 init: OK — CONFIG VERIFIED BY CHIP (addr=0x%02X, %s)",
+					drb->resolved_addr,
+					(drb->config_baud_div == 1) ?
+							"debug baud" : "fallback ~9600 baud");
+			DBG_PRINT(GENERAL, "  GCONF    readback=0x%08lX MATCH",
+					(unsigned long )drb->gconf_readback);
+			DBG_PRINT(GENERAL, "  CHOPCONF readback=0x%08lX MATCH",
+					(unsigned long )drb->chopconf_readback);
+
+			/* Chopper mode reported from the READ-BACK, not from the macro —
+			 * this is the ground truth the chip is actually running. */
+			DBG_PRINT(GENERAL, "  Chopper: %s%s",
+					(drb->gconf_readback & GCONF_EN_SPREADCYCLE) ?
+							"SpreadCycle" : "StealthChop",
+					(TMC_CHOPPER_MODE == TMC_CHOPPER_HYBRID) ?
+							" (hybrid: SpreadCycle above TPWMTHRS)" : "");
+			DBG_PRINT(GENERAL,
+					"  Current: IRUN=%u (%u mA pk) IHOLD=%u (%u mA pk) %s",
+					TMC_IRUN_SETTING,
+					(unsigned )((TMC_IRUN_SETTING + 1u) * 2500u / 32u),
+					TMC_IHOLD_SETTING,
+					(unsigned )((TMC_IHOLD_SETTING + 1u) * 2500u / 32u),
+					drb->ihold_write_ok ?
+							"IFCNT-confirmed" : "*** UNCONFIRMED ***");
+			DBG_PRINT(GENERAL, "  TPOWERDOWN/TPWMTHRS: %s",
+					drb->timing_write_ok ?
+							"IFCNT-confirmed" : "*** UNCONFIRMED ***");
+
+			/* DRV_STATUS at standstill: OT/OTPW and the short flags are
+			 * meaningful here; OLA/OLB (open load) are NOT — they only mean
+			 * something while the motor is turning. */
+			if (drb->drv_status_ok) {
+				uint32_t ds = drb->drv_status;
+				DBG_PRINT(GENERAL,
+						"  DRV_STATUS=0x%08lX CS_actual=%lu%s%s%s%s",
+						(unsigned long )ds,
+						(unsigned long )((ds & DRV_STATUS_CS_MASK) >> 16),
+						(ds & DRV_STATUS_OT) ? " OVERTEMP!" : "",
+						(ds & DRV_STATUS_OTPW) ? " otpw(pre-warn)" : "",
+						((ds & (DRV_STATUS_S2GA | DRV_STATUS_S2GB)) ?
+								" SHORT-TO-GND!" : ""),
+						((ds & (DRV_STATUS_S2VSA | DRV_STATUS_S2VSB)) ?
+								" SHORT-TO-VS!" : ""));
+			} else {
+				DBG_PRINT(GENERAL, "  DRV_STATUS unavailable");
+			}
 		} else {
 			static const char *step_names[] = { [TMC2209_INIT_STEP_NONE
 					] = "NONE", [TMC2209_INIT_STEP_SMOKE_TEST] = "SMOKE_TEST",
@@ -418,13 +431,32 @@ int main(void)
 					[TMC2209_INIT_STEP_GCONF_READBACK] = "GCONF_READBACK",
 					[TMC2209_INIT_STEP_CHOPCONF_READBACK] = "CHOPCONF_READBACK",
 					[TMC2209_INIT_STEP_COMPLETE] = "COMPLETE", };
+			const TMC2209_Diag_t *dfb = TMC2209_GetDiagnostics();
 			TMC2209_InitStep_t step = TMC2209_GetInitFailedStep();
 			const char *sname =
 					(step <= TMC2209_INIT_STEP_COMPLETE) ?
 							step_names[step] : "UNKNOWN";
 			DBG_ERROR(GENERAL,
-					"TMC2209 init: FAILED at step %s (err=%d)",
+					"TMC2209 init: *** CONFIG NOT VERIFIED *** failed at step %s (err=%d)",
 					sname, (int )tmc_status);
+			if (!dfb->addr_found) {
+				DBG_ERROR(GENERAL,
+						"  No TMC2209 answered an IFCNT read on addr 0-3 — RX path is dead or chip not in UART mode");
+			} else {
+				DBG_ERROR(GENERAL,
+						"  TMC2209 answered on addr=0x%02X but the config could not be confirmed",
+						dfb->resolved_addr);
+			}
+			if (dfb->blind_fallback) {
+				DBG_ERROR(GENERAL,
+						"  Config was written UNVERIFIED as a last resort. Motor will run, but:");
+				DBG_ERROR(GENERAL,
+						"    - SpreadCycle / microstep resolution are NOT confirmed");
+				DBG_ERROR(GENERAL,
+						"    - IRUN/IHOLD are NOT confirmed: if GCONF was lost, I_SCALE_ANALOG");
+				DBG_ERROR(GENERAL,
+						"      defaults to 1 and phase current comes from the module VREF pot");
+			}
 		}
 
 		/* ── TMC2209 UART diagnostic dump (IFCNT-verified init) ── */
@@ -433,10 +465,22 @@ int main(void)
 
 			DBG_PRINT(GENERAL, "--- TMC2209 UART Diagnostics ---");
 
-			/* MS1/MS2 — determines slave address */
+			/* MS1/MS2 nominally set the slave address; the real address is
+			 * discovered by IFCNT read, so a mismatch here is informative
+			 * (it means the MS pins do not reach the driver module). */
 			uint8_t expected_addr = (d->ms2_level << 1) | d->ms1_level;
-			DBG_PRINT(GENERAL, "MS1=%u MS2=%u -> addr=0x%02X",
+			DBG_PRINT(GENERAL, "MS1=%u MS2=%u -> addr=0x%02X (pin-implied)",
 					d->ms1_level, d->ms2_level, expected_addr);
+			if (d->addr_found) {
+				DBG_PRINT(GENERAL, "Addr probe: TMC replied on 0x%02X -> %s",
+						d->resolved_addr,
+						(d->resolved_addr == expected_addr) ?
+								"matches MS pins" :
+								"DIFFERS from MS pins (MS routing suspect)");
+			} else {
+				DBG_PRINT(GENERAL,
+						"Addr probe: no reply on addr 0-3 (RX path dead)");
+			}
 
 			DBG_PRINT(GENERAL, "Preamble TX: %s",
 					d->preamble_tx_ok ? "OK" : "FAIL");
@@ -450,11 +494,13 @@ int main(void)
 			DBG_PRINT(GENERAL, "  GPIOA IDR=0x%08lX MODER=0x%08lX",
 					(unsigned long )d->gpioa_idr,
 					(unsigned long )d->gpioa_moder);
-			if (d->blind_fallback) {
+			if (d->config_verified) {
 				DBG_PRINT(GENERAL,
-						"  MODE: write-only push-pull (RX not routed on this PCB)");
+						"  MODE: IFCNT-verified writes + read-back (RX OK, BRR x%u)",
+						d->config_baud_div);
 			} else {
-				DBG_PRINT(GENERAL, "  MODE: IFCNT-verified writes (RX OK)");
+				DBG_PRINT(GENERAL,
+						"  MODE: UNVERIFIED blind writes — verification failed on every baud");
 			}
 			DBG_PRINT(GENERAL, "--- end TMC2209 diag ---");
 		}
