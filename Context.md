@@ -25,12 +25,32 @@ HAL. CAN slaves on a 250 kbit/s bus.
 | Device | Builds | HAL | Hardware |
 |---|---|---|---|
 | valve  | yes | 1.2.6 | **VALIDATED** 2026-07-29 — UART + full CAN (NMT start, RPDO open/close, TPDO interval). Flashed via st-flash 1.8.0 / ST-LINK V3. |
-| pump   | yes | 1.2.6 (was 1.2.5) | not yet — highest regression risk (HAL moved) |
+| pump   | yes | 1.2.6 (was 1.2.5) | **CAN validated** 2026-08-05 (Firmware 2.0.0, Nema-17): NMT START→Operational, PDO run@10ml/min drove motor, quick stop OK, step rate matches (timer correct). ⚠️ TMC2209 UART RX-dead — see below. |
 | phtemp | yes | 1.2.6 | **VALIDATED** — CAN on bus + responds to commands; temp probe (DQ→PA6) fix validated 2026-07-29 |
 
 Migration is PROVEN on hardware for valve AND phtemp. CMake+14.3.1 build is
 functionally equivalent to the CubeIDE build on real devices. pump not yet
 hardware-validated.
+
+### pump TMC2209 UART RX-dead — OPEN hardware issue (2026-08-05)
+Pump Firmware 2.0.0 boots and runs the motor, but TMC2209 UART is **one-way**:
+TX OK ("Preamble TX: OK"), **no RX reply** on addr 0-3 → IFCNT smoke test fails →
+config written UNVERIFIED. Consequence: chip falls back to **pin-strapped 1/8
+microstep (MS1=0,MS2=0) + VREF-pot current**, NOT the intended UART-configured
+full-step/SpreadCycle/IRUN-IHOLD. "Runs" ≠ "runs as configured."
+- **NOT a build/migration issue, NOT a firmware regression.** The CMake build is
+  validated on CAN; the driver is explicitly designed to run the motor even with a
+  dead RX path (for diagnosis). USART2 RX = **PA3** (AF_OD), correctly configured
+  (MODER shows PA2/PA3 = AF, REACK set), but line is silent (no RXNE).
+- **Prime suspect (firmware's own doc, tmc2209_uart.c header):** R12 (5k pull-up to
+  3V3 on the PDN_UART bus) not populated → bus idles below VIH → all RX breaks.
+  This is the documented failure mode for exactly this symptom. Check R12 first;
+  scope PA3 idle (~3.0V expected; ~2.1V or lower = R12 missing/wrong).
+- **Second suspect (project history):** this same RX-dead symptom was previously
+  root-caused to MCU/PA3 silicon and fixed by an MCU swap. If R12 is populated and
+  RX is still dead, check whether this board's MCU is a known-bad one.
+- Milestone: with pump CAN-validated, **all three devices are now build-validated
+  on CAN**. The CMake migration is proven across the whole fleet.
 
 ### Repo location (as of 2026-07-29)
 Code has been copied into the org repo **/Users/dakotaward/code/firmware-production**
