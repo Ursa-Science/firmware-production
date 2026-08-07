@@ -20,11 +20,12 @@
  *   DBG_BLOCK(CAN) { ... }               // conditional code block
  *
  * TRANSPORT:
- *   Output is enqueued into a 1 KB ring buffer and drained by the USART2
- *   TXE interrupt — zero blocking in the main loop.
+ *   Output goes to SEGGER RTT channel 0 (RAM buffer drained by the debug
+ *   probe over SWD, NO_BLOCK_SKIP) — zero blocking, and the UART shared
+ *   with the TMC2209 is never touched.  See log.c for host-side viewers.
  *
- *   Call Log_Init(&huart2) once after MX_USART2_UART_Init().
- *   Call Log_TxISR()      from USART2_IRQHandler.
+ *   Call Log_Init(&huart2) once at boot (huart kept for API compat, unused).
+ *   Log_TxISR() is a legacy no-op retained for stm32g4xx_it.c.
  ******************************************************************************
  */
 
@@ -69,11 +70,9 @@ extern "C" {
 #define ENABLE_DIAGNOSTICS      DEBUG_MASTER_ENABLE
 
 /*============================================================================*/
-/*                        RING BUFFER CONFIGURATION                           */
+/*                        FORMAT BUFFER CONFIGURATION                         */
 /*============================================================================*/
 
-#define LOG_RING_SIZE       1024u           /**< Must be power of two */
-#define LOG_RING_MASK       (LOG_RING_SIZE - 1u)
 #define LOG_FMT_BUF_SIZE    128u            /**< Stack buffer in Log_Write */
 
 /*============================================================================*/

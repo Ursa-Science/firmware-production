@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include "mcop_inc.h"
 #include "log.h"
+#include "SEGGER_RTT.h"
 #include "motor_control.h"
 #include "mco_events.h"
 #include "stepper.h"
@@ -93,24 +94,17 @@ static void MX_IWDG_Init(void);
 #endif /* __GNUC__ */
 
 /**
- * @brief  Printf retarget — routes through ring buffer when log is ready,
- *         falls back to blocking HAL_UART_Transmit during early init.
+ * @brief  Printf retarget — routes to SEGGER RTT via Log_PutChar.
+ *         Safe at any time (RTT self-initialises on first write), so early
+ *         init banners no longer need a blocking UART fallback and printf
+ *         never touches USART2 (which belongs to the TMC2209).
  */
 PUTCHAR_PROTOTYPE
 {
-	if (Log_IsReady()) {
-		if (ch == '\n') {
-			Log_PutChar('\r');
-		}
-		Log_PutChar((uint8_t) ch);
-	} else {
-		/* Before Log_Init(): use blocking transmit for init banners */
-		if (ch == '\n') {
-			uint8_t cr = '\r';
-			HAL_UART_Transmit(&huart2, &cr, 1, HAL_MAX_DELAY);
-		}
-		HAL_UART_Transmit(&huart2, (uint8_t*) &ch, 1, HAL_MAX_DELAY);
+	if (ch == '\n') {
+		Log_PutChar('\r');
 	}
+	Log_PutChar((uint8_t) ch);
 	return ch;
 }
 
@@ -349,18 +343,9 @@ int main(void)
 		gProcImg[0x68] = (uint8_t) TMC2209_GetInitFailedStep();
 	}
 
-	/* Reset terminal character set — TMC2209 datagram bytes on the shared
-	 * USART2 TX line may have included 0x0E (Shift Out), switching the
-	 * terminal into DEC Special Graphics mode.  0x0F (Shift In) restores
-	 * the normal G0 (ASCII) character set.  ESC(B explicitly selects US
-	 * ASCII as G0 for terminals that need it. */
-	{
-		const uint8_t term_reset[] = "\x0F\x1B(B"; /* SI + ESC ( B */
-		HAL_UART_Transmit(&huart2, (uint8_t*) term_reset, 3, 10);
-	}
-	// Switch from blocking printf to non-blocking ring buffer.
-	// All init-time diagnostics above used blocking printf via __io_putchar.
-	// From here on, output is buffered and drained by USART2 TXE interrupt.
+	/* (The old 0x0F/ESC(B terminal-reset hack is gone: logging now goes out
+	 * over RTT/SWD, so the console never sees TMC2209 datagram bytes and
+	 * USART2 carries TMC traffic only.) */
 	Log_Init(&huart2);
 
 	/* ── IWDG reset detection ── */
@@ -1092,17 +1077,14 @@ void Error_Handler(void)
   /* USER CODE BEGIN Error_Handler_Debug */
 	/* Diagnostic output + red LED blink before halting.
 	 * This function may be called very early (before Log_Init / LEDControl_Init),
-	 * so we use only blocking UART and direct GPIO — no ring-buffer log, no PWM. */
+	 * so we use only RTT and direct GPIO — no PWM, no UART. */
 
-	/* ── Phase 1 (before IRQ disable): blocking UART diagnostic ── */
-	{
-		const char msg[] =
-				"\r\n[FATAL] Error_Handler() entered — system halted\r\n";
-		/* huart2 is file-scope; if USART2 was already initialised the transmit
-		 * will succeed.  If called before MX_USART2_UART_Init() the write is
-		 * harmless (HAL returns HAL_ERROR and we proceed). */
-		HAL_UART_Transmit(&huart2, (const uint8_t*) msg, sizeof(msg) - 1, 50);
-	}
+	/* ── Phase 1 (before IRQ disable): RTT diagnostic ── */
+	/* RTT self-initialises on first write, so this is safe at any point;
+	 * the message stays readable in the RAM buffer even after the halt
+	 * (probe-rs/RTT viewer, or GDB symbol _SEGGER_RTT). */
+	SEGGER_RTT_WriteString(0,
+			"\r\n[FATAL] Error_Handler() entered — system halted\r\n");
 
   __disable_irq();
 
