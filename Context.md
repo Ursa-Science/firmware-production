@@ -32,25 +32,28 @@ Migration is PROVEN on hardware for valve AND phtemp. CMake+14.3.1 build is
 functionally equivalent to the CubeIDE build on real devices. pump not yet
 hardware-validated.
 
-### pump TMC2209 UART RX-dead — OPEN hardware issue (2026-08-05)
-Pump Firmware 2.0.0 boots and runs the motor, but TMC2209 UART is **one-way**:
-TX OK ("Preamble TX: OK"), **no RX reply** on addr 0-3 → IFCNT smoke test fails →
-config written UNVERIFIED. Consequence: chip falls back to **pin-strapped 1/8
-microstep (MS1=0,MS2=0) + VREF-pot current**, NOT the intended UART-configured
-full-step/SpreadCycle/IRUN-IHOLD. "Runs" ≠ "runs as configured."
-- **NOT a build/migration issue, NOT a firmware regression.** The CMake build is
-  validated on CAN; the driver is explicitly designed to run the motor even with a
-  dead RX path (for diagnosis). USART2 RX = **PA3** (AF_OD), correctly configured
-  (MODER shows PA2/PA3 = AF, REACK set), but line is silent (no RXNE).
-- **Prime suspect (firmware's own doc, tmc2209_uart.c header):** R12 (5k pull-up to
-  3V3 on the PDN_UART bus) not populated → bus idles below VIH → all RX breaks.
-  This is the documented failure mode for exactly this symptom. Check R12 first;
-  scope PA3 idle (~3.0V expected; ~2.1V or lower = R12 missing/wrong).
-- **Second suspect (project history):** this same RX-dead symptom was previously
-  root-caused to MCU/PA3 silicon and fixed by an MCU swap. If R12 is populated and
-  RX is still dead, check whether this board's MCU is a known-bad one.
-- Milestone: with pump CAN-validated, **all three devices are now build-validated
-  on CAN**. The CMake migration is proven across the whole fleet.
+### pump TMC2209 UART — OPEN, TWO distinct problems (see TMC2209_UART_AUDIT.md)
+Full investigation is in **`TMC2209_UART_AUDIT.md`** — read it first. Summary:
+- **Architecture (root fragility):** debug logging and the TMC2209 share ONE UART
+  (USART2, PA2 TX / PA3 RX, both on the PDN_UART net). No free pins for a separate
+  debug UART. Any serial monitor you attach is electrically on the TMC bus →
+  monitor RX-only (adapter TX disconnected) or it disturbs TMC comms.
+- **Problem 1 — bad board (HARDWARE):** PDN_UART clamped at **0.60 V** (good board
+  idles 2.76 V); ~1 mA sink overpowering a healthy 2.6 kΩ pull-up. MCU can't even
+  RX its own echo (`echo_drain_ok=false`, `err=UART_TX`). Ruled out: R12 (fine),
+  firmware, DIAG↔PDN short (open). Suspects: bad TMC module / PCB short / stuck-low
+  PA2. NEXT: **swap the TMC module** good↔bad to localize.
+- **Problem 2 — firmware regression `df4a262` "PA5 → EXTI fault-input":** flashing
+  it onto a KNOWN-GOOD board breaks its UART (`RX dead`) with PDN idling HIGH (not
+  the clamp) — a firmware regression, different failure mode. The commit does NOT
+  touch the UART driver; PA5 is really the TMC DIAG output (was mislabeled SPREAD).
+  Mechanism not yet explained. NEXT: revert (`git checkout 7db97b5 -- devices/pump`)
+  to confirm + restore reference, then bisect df4a262's hunks.
+- **Firmware comms code audited = SOUND.** Not the cause of either problem.
+- Latent bug: OD 0x2500/0x2501 (TMC health readback) don't exist in the EDS; the
+  `gProcImg[0x67/0x68]` writes go to an unmapped offset.
+- Milestone still stands: all three devices are CMake-build-validated on CAN; the
+  pump's TMC UART is a separate hardware/board-bringup issue, not a build issue.
 
 ### Repo location (as of 2026-07-29)
 Code has been copied into the org repo **/Users/dakotaward/code/firmware-production**

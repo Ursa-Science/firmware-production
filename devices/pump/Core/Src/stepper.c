@@ -1000,8 +1000,7 @@ static void Stepper_UpdatePWM(void) {
  *        MS1=1, MS2=0 → 32 µsteps (UART addr 0x01)
  *        MS1=0, MS2=1 → 64 µsteps (UART addr 0x02)
  *        MS1=1, MS2=1 → 16 µsteps (UART addr 0x03)
- *        PA5 is the TMC2209 module's DIAG output (fault input via EXTI) —
- *        chopper mode is set via UART only.
+ *        PA5 (SPREAD) not connected on TMC2209 — chopper mode set via UART only.
  */
 static void Stepper_ConfigureMicrostepPins(Stepper_Microstep_t microstep) {
 	switch (microstep) {
@@ -1041,10 +1040,9 @@ static void Stepper_ConfigureMicrostepPins(Stepper_Microstep_t microstep) {
 		break;
 	}
 
-	// NOTE: PA5 is NOT a chopper-mode pin — the PCB routes the module's DIAG
-	// output there (fault input, EXTI). Chopper mode (SpreadCycle vs
-	// StealthChop) is set via the UART GCONF register only; the TMC2209
-	// defaults to StealthChop without UART configuration.
+	// NOTE: PA5 (SPREAD) is not connected on TMC2209 — no SPREAD pin exists.
+	// Chopper mode (SpreadCycle vs StealthChop) is set via UART GCONF register (Phase 2).
+	// TMC2209 defaults to StealthChop without UART configuration.
 }
 
 /**
@@ -1243,9 +1241,9 @@ void Stepper_DiagnosticCheck(void) {
 				HAL_GPIO_ReadPin(STEPPER_MS1_PORT, STEPPER_MS1_PIN) ? "HIGH" : "LOW");
 		DBG_PRINT(STEPPER, "  MS2: %s",
 				HAL_GPIO_ReadPin(STEPPER_MS2_PORT, STEPPER_MS2_PIN) ? "HIGH" : "LOW");
-		DBG_PRINT(STEPPER, "  DIAG: %s",
-				HAL_GPIO_ReadPin(TMC_DIAG_GPIO_Port, TMC_DIAG_Pin) ?
-						"HIGH (driver FAULT latched)" : "LOW (ok)");
+		DBG_PRINT(STEPPER, "  SPREAD: %s",
+				HAL_GPIO_ReadPin(STEPPER_SPREAD_PORT, STEPPER_SPREAD_PIN) ?
+						"HIGH (SpreadCycle)" : "LOW (StealthChop)");
 
 		// Check timer configuration
 		DBG_PRINT(STEPPER, "");
@@ -1471,30 +1469,6 @@ uint32_t Stepper_GetPendingEvents(void) {
 	stepper_pending_events = 0;
 	__enable_irq();
 	return events;
-}
-
-/**
- * @brief Signal a TMC2209 driver fault (DIAG pin rose) — ISR-safe
- * @note  Flag-set only; all policy (level confirmation, FAULT entry,
- *        driver disable) lives in MotorControl_Process().
- */
-void Stepper_NotifyDriverFault(void) {
-	stepper_pending_events |= STEPPER_EVT_DRV_FAULT;
-}
-
-/**
- * @brief EXTI rising-edge callback — TMC2209 DIAG on PA5 (TMC_DIAG_Pin)
- * @note  DIAG drives HIGH on latched driver error (short-to-GND/VS,
- *        overtemp), charge-pump undervoltage, and at power-on reset (the
- *        power-on pulse is discarded by main() clearing pending flags
- *        before arming the NVIC line). If another EXTI pin is ever added,
- *        extend the pin check here — HAL has ONE rising callback for all
- *        lines.
- */
-void HAL_GPIO_EXTI_Rising_Callback(uint16_t GPIO_Pin) {
-	if (GPIO_Pin == TMC_DIAG_Pin) {
-		Stepper_NotifyDriverFault();
-	}
 }
 
 /*============================================================================*/

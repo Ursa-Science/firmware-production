@@ -37,7 +37,6 @@ typedef enum {
 #define STEPPER_EVT_STOPPED   (1U << 0)  // Deceleration/stop complete, motor is idle
 #define STEPPER_EVT_AT_SPEED  (1U << 1)  // Acceleration reached target speed
 #define STEPPER_EVT_ERROR     (1U << 2)  // Hardware fault detected (e.g. position overflow)
-#define STEPPER_EVT_DRV_FAULT (1U << 3)  // TMC2209 DIAG rose (driver error; confirm by level)
 
 /**
  * @brief Stepper Motor Direction
@@ -233,16 +232,6 @@ void Stepper_ClearError(void);
 void Stepper_ProcessTimerUpdate(void);
 
 /**
- * @brief Signal a TMC2209 driver fault (DIAG pin rose)
- * @note  ISR-safe: only sets STEPPER_EVT_DRV_FAULT in the pending-event
- *        bitmask. Called from the PA5 EXTI callback, and from main() when
- *        DIAG is found already latched high at monitor-arm time (the edge
- *        predates the EXTI, so the interrupt alone would never fire).
- *        MotorControl_Process() confirms by level before entering FAULT.
- */
-void Stepper_NotifyDriverFault(void);
-
-/**
  * @brief Set PWM duty cycle
  * @param duty_percent Duty cycle percentage (0-100)
  */
@@ -351,6 +340,10 @@ uint32_t Stepper_GetTimerPSC(void);
 #define STEPPER_MS2_PORT        GPIOA
 #endif
 
+#ifndef STEPPER_SPREAD_PIN
+#define STEPPER_SPREAD_PIN      SPREAD_Pin     // TMC2209: no physical SPREAD pin — PA5 unconnected
+#define STEPPER_SPREAD_PORT     SPREAD_GPIO_Port
+#endif
 /* Timer definition ----------------------------------------------------------*/
 #ifndef STEPPER_TIMER
 #define STEPPER_TIMER           htim1

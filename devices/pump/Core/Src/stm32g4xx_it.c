@@ -206,16 +206,6 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /**
- * @brief This function handles EXTI lines 5-9. Only line 5 is in use:
- *        PA5 = TMC2209 module DIAG output (driver fault, rising edge).
- *        Dispatches to HAL_GPIO_EXTI_Rising_Callback() in stepper.c,
- *        which only sets STEPPER_EVT_DRV_FAULT for the main loop.
- */
-void EXTI9_5_IRQHandler(void) {
-	HAL_GPIO_EXTI_IRQHandler(TMC_DIAG_Pin);
-}
-
-/**
  * @brief This function handles TIM1 Update interrupt and TIM16 global interrupt.
  */
 void TIM1_UP_TIM16_IRQHandler(void) {
