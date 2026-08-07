@@ -59,8 +59,13 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define SPREAD_Pin GPIO_PIN_5        // TMC2209: SPREAD pin (was MS3 on A4988)
-#define SPREAD_GPIO_Port GPIOA
+/* TMC2209 module DIAG output → MCU fault input (EXTI5, rising edge).
+ * History: this pin was mislabeled "MS3" (A4988 era) then "SPREAD" — both
+ * fictions. The PCB netlist (U8 pad 17 → net PA5) routes the BTT module's
+ * DIAG here. DIAG drives HIGH on latched driver error (short-to-GND/VS,
+ * overtemp), charge-pump undervoltage, and briefly at power-on reset. */
+#define TMC_DIAG_Pin GPIO_PIN_5
+#define TMC_DIAG_GPIO_Port GPIOA
 #define MS2_Pin GPIO_PIN_6
 #define MS2_GPIO_Port GPIOA
 #define MS1_Pin GPIO_PIN_7

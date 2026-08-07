@@ -517,6 +517,25 @@ int main(void)
 
 	PrintFDCANDiagnostics();
 
+	/* ── Arm the TMC2209 DIAG fault monitor (PA5 EXTI) ──
+	 * Armed last, after TMC init and motor-control init, with pending flags
+	 * cleared first: the TMC pulses DIAG at power-on reset (datasheet Fig 15.1)
+	 * and that pulse must not fault a healthy boot. If DIAG is ALREADY latched
+	 * high here, a real driver error exists at power-up — inject the event so
+	 * the normal fault path handles it instead of it going unnoticed (the
+	 * rising edge already happened, so the EXTI alone would never fire). */
+	__HAL_GPIO_EXTI_CLEAR_IT(TMC_DIAG_Pin);
+	HAL_NVIC_ClearPendingIRQ(EXTI9_5_IRQn);
+	HAL_NVIC_SetPriority(EXTI9_5_IRQn, 6, 0);
+	HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+	if (HAL_GPIO_ReadPin(TMC_DIAG_GPIO_Port, TMC_DIAG_Pin) == GPIO_PIN_SET) {
+		DBG_ERROR(GENERAL,
+				"TMC DIAG fault monitor armed: PA5=HIGH — driver fault latched at boot!");
+		Stepper_NotifyDriverFault();
+	} else {
+		DBG_PRINT(GENERAL, "TMC DIAG fault monitor armed (PA5=LOW, healthy)");
+	}
+
 	
 
 
@@ -1015,15 +1034,25 @@ static void MX_GPIO_Init(void)
 	// TMC2209 EN is ACTIVE LOW: GPIO_PIN_RESET = driver ENABLED (draws IHOLD).
 	// Boot with ENABLE_Pin HIGH (disabled) so coils are de-energized until
 	// firmware explicitly enables the driver via Stepper_Enable().
-	HAL_GPIO_WritePin(GPIOA, SPREAD_Pin | MS2_Pin | MS1_Pin | DIR_Pin,
-			GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(GPIOA, MS2_Pin | MS1_Pin | DIR_Pin, GPIO_PIN_RESET);
 	HAL_GPIO_WritePin(GPIOA, ENABLE_Pin, GPIO_PIN_SET); // HIGH = driver disabled at boot
-	/*Configure GPIO pins : SPREAD_Pin MS2_Pin MS1_Pin */
-	GPIO_InitStruct.Pin = SPREAD_Pin | MS2_Pin | MS1_Pin;
+	/*Configure GPIO pins : MS2_Pin MS1_Pin */
+	GPIO_InitStruct.Pin = MS2_Pin | MS1_Pin;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
 	GPIO_InitStruct.Pull = GPIO_PULLDOWN;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
 	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+	/* TMC_DIAG_Pin (PA5): the TMC2209 module's DIAG output — INPUT, never an
+	 * output (the old SPREAD/MS3 output config fought the module's push-pull
+	 * DIAG driver on every fault). Rising-edge EXTI; pulldown so the socketed
+	 * module being absent cannot float the line. The EXTI NVIC line is NOT
+	 * enabled here — it is armed in main() after TMC/motor init, with pending
+	 * flags cleared, so the chip's power-on DIAG pulse is discarded. */
+	GPIO_InitStruct.Pin = TMC_DIAG_Pin;
+	GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+	GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+	HAL_GPIO_Init(TMC_DIAG_GPIO_Port, &GPIO_InitStruct);
 
 	/*Configure GPIO pins : DIR_Pin ENABLE_Pin */
 	GPIO_InitStruct.Pin = DIR_Pin | ENABLE_Pin;

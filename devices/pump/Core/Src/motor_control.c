@@ -29,15 +29,22 @@ extern TIM_HandleTypeDef htim4;  // Green LED - TIM4 CH1
 
 /* Private defines -----------------------------------------------------------*/
 
-// WPX-1 pump with 1:8 gear ratio: 200 motor steps × 8 = 1600 full-steps/rev
-// TMC2209 GCONF.MSTEP_REG_SELECT=1 via IFCNT-verified UART write
-// CHOPCONF.MRES=8 (full step), MicroPlyer interpolates to 256 internally
-// Each timer pulse = 1 full step
+// 17HS19-2004S1 NEMA 17, DIRECT DRIVE (no gearbox):
+//   200 full steps/rev × 8 microsteps = 1600 timer pulses per pump revolution.
+// Numerically identical to the WPX-1's 200 motor steps × 8 gearbox, so this
+// value is UNCHANGED across the motor migration — only its meaning changed
+// (microsteps per rev, not gear-multiplied full steps per rev).
+// TMC2209 GCONF.MSTEP_REG_SELECT=1 via IFCNT-verified UART write;
+// CHOPCONF.MRES=5 (1/8 µstep), MicroPlyer interpolates to 256 internally.
+// Each timer pulse = 1 microstep.
 #define STEPS_PER_REV           1600
 
 // Calibration Constants
 // BASE_STEPS_PER_ML: Theoretical value based on target of 100 ml/min @ 90 RPM
 // Calculation: (90 RPM * 1600 steps/rev) / 100 ml/min = 1440 steps/ml
+// NOTE: only valid while the same pump head displaces the same ml/rev. Re-derive
+// from the catch test; fine trim belongs in the front end via
+// FlowCorrectionFactor (OD 0x2200), not baked in here.
 #define BASE_STEPS_PER_ML       1440.0f
 
 
@@ -140,6 +147,10 @@ typedef struct {
 /* Private variables ---------------------------------------------------------*/
 static MotorControl_t motor_ctrl = { 0 };
 
+/* TMC2209 DIAG pulses seen but not level-confirmed (transients, not faults).
+ * Debug-log statistic only — repeated transients suggest supply/EMI trouble. */
+static uint32_t diag_transient_count = 0;
+
 // CiA 402 Compliance: Last known TargetFlowRate to persist across state transitions
 // This static variable maintains the last received TargetFlowRate value, allowing
 // the motor to resume at the correct speed after halt or quick stop operations
@@ -227,6 +238,43 @@ static void MotorControl_ProcessStepperEvents(void) {
 					motor_ctrl.dose_tracker.target_volume_ml / 1000,
 					motor_ctrl.dose_tracker.target_volume_ml % 1000);
 			motor_ctrl.dose_tracker.dose_active = false;
+		}
+	}
+
+	if (events & STEPPER_EVT_DRV_FAULT) {
+		/* TMC2209 DIAG rose. Real driver errors (short-to-GND/VS, overtemp)
+		 * are LATCHED by the chip and hold DIAG high until the driver is
+		 * disabled — so confirm by level before faulting. A low read means a
+		 * transient pulse (EMI, charge-pump undervoltage blip, or a stray
+		 * power-on pulse): log and count it, but do not stop the pump. */
+		if (HAL_GPIO_ReadPin(TMC_DIAG_GPIO_Port, TMC_DIAG_Pin)
+				== GPIO_PIN_SET) {
+			DBG_ERROR(MOTOR,
+					"TMC2209 DIAG latched HIGH (short/overtemp) → FAULT, driver disabled");
+			motor_ctrl.current_state = MOTOR_STATE_FAULT;
+			motor_ctrl.pump_state = PUMPSTATE_FAULT;
+			motor_ctrl.fault_active = true;
+
+			if (motor_ctrl.dose_tracker.dose_active) {
+				DBG_STATE(DOSE,
+						"Driver fault aborted dose at %lu.%03lu ml of %lu.%03lu ml",
+						motor_ctrl.dose_tracker.delivered_ml / 1000,
+						motor_ctrl.dose_tracker.delivered_ml % 1000,
+						motor_ctrl.dose_tracker.target_volume_ml / 1000,
+						motor_ctrl.dose_tracker.target_volume_ml % 1000);
+				motor_ctrl.dose_tracker.dose_active = false;
+			}
+
+			/* Stop step generation, then de-energize. Disabling (EN high)
+			 * also clears the TMC's drv_err latch (datasheet §15.2) → DIAG
+			 * falls → the EXTI is naturally re-armed for the next fault. */
+			Stepper_Stop();
+			Stepper_Disable();
+		} else {
+			diag_transient_count++;
+			DBG_PRINT(MOTOR,
+					"TMC2209 DIAG transient pulse ignored (not latched; count=%lu)",
+					(unsigned long) diag_transient_count);
 		}
 	}
 }
@@ -1244,11 +1292,11 @@ static void MotorControl_PrintDiagnostics(void) {
 				Stepper_GetSpeedRPM(), (unsigned long )Stepper_GetTimerARR(),
 				(unsigned long )Stepper_GetTimerPSC(), status.current_position);
 
-		/* GPIO states (MS pins for microstepping, SPREAD, ENABLE, DIR) */
-		DBG_HW(MOTOR, "GPIO: MS1=%d MS2=%d SPREAD=%d DIR=%d EN=%d",
+		/* GPIO states (MS pins for microstepping, DIAG fault input, ENABLE, DIR) */
+		DBG_HW(MOTOR, "GPIO: MS1=%d MS2=%d DIAG=%d DIR=%d EN=%d",
 				HAL_GPIO_ReadPin(GPIOA, MS1_Pin),
 				HAL_GPIO_ReadPin(GPIOA, MS2_Pin),
-				HAL_GPIO_ReadPin(GPIOA, SPREAD_Pin),
+				HAL_GPIO_ReadPin(TMC_DIAG_GPIO_Port, TMC_DIAG_Pin),
 				HAL_GPIO_ReadPin(GPIOA, DIR_Pin),
 				HAL_GPIO_ReadPin(GPIOA, ENABLE_Pin));
 
