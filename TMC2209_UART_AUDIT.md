@@ -1,34 +1,60 @@
 # TMC2209 UART — Investigation & Audit (pump module)
 
-Status: **OPEN.** Two distinct problems identified (one hardware, one firmware).
-Last updated: 2026-08-07.
+Status: **CLOSED 2026-08-07.** Both problems resolved: one hardware (board
+retired), one an observer artifact (there was never a firmware regression).
+Preserved as reference for the architecture, evidence, and debug procedures.
 
 This documents a deep investigation into why the pump module's TMC2209 stepper
-driver reports `CONFIG NOT VERIFIED / RX path dead` over UART. Firmware side was
-audited end-to-end and is sound; the faults are (1) a hardware clamp on one board
-and (2) a firmware regression introduced by the PA5 refactor.
+driver reported `CONFIG NOT VERIFIED / RX path dead` over UART.
 
 ---
 
-## TL;DR
+## TL;DR (final)
 
 - **The firmware comms code is correct.** Driver, init, echo-drain, USART2 config,
-  and IRQ handling were all audited. Not the cause.
-- **Problem 1 — bad board (hardware):** PDN_UART is clamped at **0.60 V** (should
-  idle ~2.76 V). Something sinks ~1 mA, overpowering a healthy 2.6 kΩ pull-up. No
-  idle-high → no UART. Root cause is board-level (bad TMC module, PCB short, or a
-  stuck-low MCU pin). **Not yet localized — do the module swap.**
-- **Problem 2 — firmware regression `df4a262`:** flashing the "PA5 → EXTI
-  fault-input" refactor onto a **known-good** board breaks its UART (`RX dead`)
-  even though its bus is electrically fine (PDN idles HIGH). Only the firmware
-  changed. The commit does **not** touch the UART driver, so it breaks UART via a
-  side effect that is **not yet explained.** **Revert to confirm; then bisect.**
+  and IRQ handling were all audited. Never the cause.
+- **Problem 1 — bad board (HARDWARE, board retired):** PDN_UART clamped at
+  **0.60 V** (good board idles ~2.76 V); ~1 mA sink overpowering a healthy 2.6 kΩ
+  pull-up → no idle-high → no UART. Localized to board level (MCU pin or GND
+  short suspected; module swap never performed — board retired instead).
+  Plausible origin: a 5 V-logic USB-UART adapter TX left connected to the PDN
+  net pushes continuous clamp current through the TMC's PDN input (bench-measured
+  3.5 V bus idle, above the 3.3 V rail) — exactly the damage signature seen.
+- **Problem 2 — "df4a262 regression": RESOLVED, not a firmware bug.** The
+  PA5 → DIAG/EXTI refactor was re-applied on a clean RTT-logging base
+  (`86af79f`), flashed to the known-good board, power-cycled, and observed over
+  RTT with **nothing attached to the UART**: `CONFIG VERIFIED BY CHIP`, GCONF/
+  CHOPCONF readback MATCH, `MODER=0xAA9652AE` (PA5 input — refactor confirmed
+  present), DIAG monitor armed healthy, motor runs at correct step rate.
+  The original "regression" evidence was all read through the serial console —
+  i.e. with a monitor electrically on the TMC bus (5 V push-pull adapter TX
+  holding the open-drain bus high) and MCU-only warm resets (the TMC never
+  power-cycles with the MCU). The observer was the fault.
+- **Root fix (commit `28e2a3f`):** logging moved off USART2 entirely, to SEGGER
+  RTT over SWD. The UART is now TMC-only; the observer-interference failure
+  class is gone by construction. See "Logging architecture" below.
 
 ---
 
-## System architecture — the root fragility
+## Logging architecture — current (since `28e2a3f`, 2026-08-07)
 
-**Debug logging and the TMC2209 share ONE UART: USART2 on PA2/PA3.**
+**Logging is SEGGER RTT over SWD; USART2 belongs exclusively to the TMC2209.**
+
+- `log.c` keeps the same `DBG_*`/`Log_Write` API but writes to RTT channel 0
+  (`NO_BLOCK_SKIP`, 4 KB up-buffer, PRIMASK lock — see comments in
+  `SEGGER_RTT_Conf.h` for why the SEGGER defaults were changed).
+- View live with `probe-rs attach --chip STM32G431KBTx build/pump.elf`
+  (ST-LINK), OpenOCD `rtt server`, or `JLinkRTTViewer` (J-Link). The first 4 KB
+  of boot log survives in RAM even if the host attaches late; post-mortem via
+  GDB at symbol `_SEGGER_RTT`.
+- Bench rule that remains: **never connect a serial adapter's TX to PA2/PA3**,
+  and never a 5 V-logic adapter at all — the net is the TMC bus, and 5 V TX
+  drive both kills comms and can permanently damage the TMC PDN pin (Problem 1's
+  likely origin). There is no longer any reason to attach a serial adapter.
+
+## System architecture — the root fragility (historical, pre-`28e2a3f`)
+
+**Debug logging and the TMC2209 shared ONE UART: USART2 on PA2/PA3.**
 
 - Debug console: `Log_Init(&huart2)`, drained by the USART2 TXE ISR (`log.h`,
   `stm32g4xx_it.c::USART2_IRQHandler` → `Log_TxISR()`).
@@ -54,7 +80,11 @@ the deeper findings below made the monitor a secondary concern.
 
 ---
 
-## Problem 1 — bad board: PDN clamped at 0.60 V (HARDWARE)
+## Problem 1 — bad board: PDN clamped at 0.60 V (HARDWARE — board retired 2026-08-07)
+
+Final status: clamp still present after all firmware fixes; confirmed pure
+hardware (MCU pin or GND short suspected). Board retired without performing the
+module swap. Evidence below kept for reference.
 
 ### Evidence
 - Boot log: `CONFIG NOT VERIFIED ... no reply on addr 0-3 ... RX path dead`.
@@ -87,9 +117,18 @@ across R7 (PA2≈0 V = stuck-low TX; PA2≈PA3≈0.6 V = PDN short to ground).
 
 ---
 
-## Problem 2 — firmware regression in commit `df4a262` (FIRMWARE)
+## Problem 2 — suspected regression in commit `df4a262` (RESOLVED 2026-08-07: observer artifact, refactor is good)
 
 `df4a262 "Refactor: PA5 → EXTI fault-input change"`.
+
+**Resolution:** the refactor re-applied on the RTT base (`86af79f`) verifies
+cleanly on the known-good board when observed over RTT with the UART untouched
+(power-cycle, `CONFIG VERIFIED BY CHIP`, `MODER=0xAA9652AE`). The original
+`RX dead` observations were made through the serial console — a monitor
+electrically on the TMC bus (5 V push-pull TX) plus warm resets that never
+reset the TMC. The sections below record the (now-explained) evidence.
+The refactor is correct and kept: PA5 really is the module's DIAG output, and
+the old output config fought the module's push-pull driver.
 
 ### What it changed
 - PA5 was mislabeled `SPREAD_Pin` (A4988-era "MS3"). The PCB netlist actually

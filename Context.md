@@ -5,7 +5,7 @@ Not a tutorial and not the running log — that is `BUILD_NOTES.md`, which holds
 detailed findings, gotchas, and history. Read this first, then BUILD_NOTES.md for
 depth. Keep this file terse and current; prune stale lines rather than appending.
 
-Last updated: 2026-07-29.
+Last updated: 2026-08-07.
 
 ---
 
@@ -25,35 +25,28 @@ HAL. CAN slaves on a 250 kbit/s bus.
 | Device | Builds | HAL | Hardware |
 |---|---|---|---|
 | valve  | yes | 1.2.6 | **VALIDATED** 2026-07-29 — UART + full CAN (NMT start, RPDO open/close, TPDO interval). Flashed via st-flash 1.8.0 / ST-LINK V3. |
-| pump   | yes | 1.2.6 (was 1.2.5) | **CAN validated** 2026-08-05 (Firmware 2.0.0, Nema-17): NMT START→Operational, PDO run@10ml/min drove motor, quick stop OK, step rate matches (timer correct). ⚠️ TMC2209 UART RX-dead — see below. |
+| pump   | yes | 1.2.6 (was 1.2.5) | **VALIDATED** 2026-08-07 (Firmware 2.0.0, Nema-17): CAN (2026-08-05: NMT, PDO run@10ml/min, quick stop, step rate) + TMC2209 UART CONFIG VERIFIED BY CHIP + PA5/DIAG refactor + RTT logging, all on good board via RTT observation. |
 | phtemp | yes | 1.2.6 | **VALIDATED** — CAN on bus + responds to commands; temp probe (DQ→PA6) fix validated 2026-07-29 |
 
-Migration is PROVEN on hardware for valve AND phtemp. CMake+14.3.1 build is
-functionally equivalent to the CubeIDE build on real devices. pump not yet
-hardware-validated.
+Migration is PROVEN on hardware for ALL THREE devices. CMake+14.3.1 build is
+functionally equivalent to the CubeIDE build on real devices.
 
-### pump TMC2209 UART — OPEN, TWO distinct problems (see TMC2209_UART_AUDIT.md)
-Full investigation is in **`TMC2209_UART_AUDIT.md`** — read it first. Summary:
-- **Architecture (root fragility):** debug logging and the TMC2209 share ONE UART
-  (USART2, PA2 TX / PA3 RX, both on the PDN_UART net). No free pins for a separate
-  debug UART. Any serial monitor you attach is electrically on the TMC bus →
-  monitor RX-only (adapter TX disconnected) or it disturbs TMC comms.
-- **Problem 1 — bad board (HARDWARE):** PDN_UART clamped at **0.60 V** (good board
-  idles 2.76 V); ~1 mA sink overpowering a healthy 2.6 kΩ pull-up. MCU can't even
-  RX its own echo (`echo_drain_ok=false`, `err=UART_TX`). Ruled out: R12 (fine),
-  firmware, DIAG↔PDN short (open). Suspects: bad TMC module / PCB short / stuck-low
-  PA2. NEXT: **swap the TMC module** good↔bad to localize.
-- **Problem 2 — firmware regression `df4a262` "PA5 → EXTI fault-input":** flashing
-  it onto a KNOWN-GOOD board breaks its UART (`RX dead`) with PDN idling HIGH (not
-  the clamp) — a firmware regression, different failure mode. The commit does NOT
-  touch the UART driver; PA5 is really the TMC DIAG output (was mislabeled SPREAD).
-  Mechanism not yet explained. NEXT: revert (`git checkout 7db97b5 -- devices/pump`)
-  to confirm + restore reference, then bisect df4a262's hunks.
-- **Firmware comms code audited = SOUND.** Not the cause of either problem.
-- Latent bug: OD 0x2500/0x2501 (TMC health readback) don't exist in the EDS; the
-  `gProcImg[0x67/0x68]` writes go to an unmapped offset.
-- Milestone still stands: all three devices are CMake-build-validated on CAN; the
-  pump's TMC UART is a separate hardware/board-bringup issue, not a build issue.
+### pump TMC2209 UART — CLOSED 2026-08-07 (see TMC2209_UART_AUDIT.md for full record)
+- **Logging is now SEGGER RTT over SWD** (commit `28e2a3f`): same DBG_*/Log API,
+  RTT channel 0, 4K buffer, PRIMASK lock. USART2 (PA2/PA3, PDN_UART net) is
+  TMC-only. View: `probe-rs attach --chip STM32G431KBTx build/pump.elf` (works
+  with ST-LINK; JLinkRTTViewer with J-Link). NEVER attach a serial adapter to
+  PA2/PA3 — a 5 V-logic adapter TX on that net kills comms and can damage the
+  TMC PDN pin.
+- **Problem 1 (bad board)** = pure hardware (PDN clamped 0.60 V, MCU pin or GND
+  short); board RETIRED. Likely origin: 5 V adapter TX clamp current into PDN.
+- **Problem 2 ("df4a262 regression")** = observer artifact, NOT a firmware bug.
+  The PA5→DIAG/EXTI refactor re-applied on the RTT base (`86af79f`) verifies
+  cleanly (CONFIG VERIFIED BY CHIP, MODER=0xAA9652AE, DIAG armed healthy, motor
+  runs). All prior "RX dead" evidence was read through a serial monitor that was
+  electrically perturbing the TMC bus, with warm resets that never reset the TMC.
+- Still latent (unchanged): OD 0x2500/0x2501 (TMC health readback) don't exist in
+  the EDS; the `gProcImg[0x67/0x68]` writes go to an unmapped offset.
 
 ### Repo location (as of 2026-07-29)
 Code has been copied into the org repo **/Users/dakotaward/code/firmware-production**
