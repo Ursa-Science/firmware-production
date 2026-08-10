@@ -5,7 +5,7 @@ Not a tutorial and not the running log — that is `BUILD_NOTES.md`, which holds
 detailed findings, gotchas, and history. Read this first, then BUILD_NOTES.md for
 depth. Keep this file terse and current; prune stale lines rather than appending.
 
-Last updated: 2026-08-07.
+Last updated: 2026-08-10.
 
 ---
 
@@ -16,9 +16,15 @@ STM32CubeIDE projects to ONE shared CMake build. All three are the SAME MCU
 (STM32G431KBT6, 128K flash / 32K RAM). Firmware = MicroCANopen Plus stack + STM32
 HAL. CAN slaves on a 250 kbit/s bus.
 
-- Working dir (this repo, git, local only): `/Users/dakotaward/code/Cowork-optimizing/ursa-cmake-build`
-- Target org repo (push only after HW validation): `/Users/dakotaward/code/firmware-production`
-- Spec: `firmware-production/specs.md`
+- Working dir = THIS repo: `/Users/dakotaward/code/firmware-production`
+  (authoritative; the old Cowork-optimizing/ursa-cmake-build staging dir is retired)
+- Spec: `specs.md`
+- **CAN master = `~/code/CANOpenGateway`** (Lely coapp C++ bridge + TypeScript
+  REST/SSE/MCP API, port 8080; python-canopen driver retired). It consumes
+  TPDOs into a per-device shadow and EMCYs natively; SYNC 10 Hz default,
+  runtime-settable. Keeps its OWN copies of the device EDS/DCF in
+  `bridge/devices/` baked into the bridge Docker image — every EDS change
+  must be copied there too + image rebuilt.
 
 ## Status
 
@@ -45,8 +51,18 @@ functionally equivalent to the CubeIDE build on real devices.
   cleanly (CONFIG VERIFIED BY CHIP, MODER=0xAA9652AE, DIAG armed healthy, motor
   runs). All prior "RX dead" evidence was read through a serial monitor that was
   electrically perturbing the TMC bus, with warm resets that never reset the TMC.
-- Still latent (unchanged): OD 0x2500/0x2501 (TMC health readback) don't exist in
-  the EDS; the `gProcImg[0x67/0x68]` writes go to an unmapped offset.
+- **TMC2209 current config LANDED by bench sweep 2026-08-07** (commit `1ee0ed9`):
+  IRUN=18 (1.48 A pk / 1.05 A rms), IHOLD=8, VSENSE must stay 0. Full sweep
+  table + rationale in the header doc block of
+  `devices/pump/Core/Inc/tmc2209_uart.h`. Do not re-tune without new data.
+- **Runtime TMC health poll** (commit `ab86db1`): DRV_STATUS read every 5 s
+  while moving → `[TMC]` RTT line (CS_actual + decoded faults). Gated by
+  `DBG_TMC_ENABLE` in log.h — flag 0 compiles out the UART reads too. Same
+  commit FIXED the DRV_STATUS bit defines (were TMC2130-layout; TMC2209 flags
+  are bits 0..11).
+- **BUG (open, fix in fault-feedback Phase 1):** `main.c` writes
+  `gProcImg[0x67/0x68]` but PIMGEND=0x66 — OUT-OF-BOUNDS past the process
+  image on every boot. The claimed P250000/P250100 pimg symbols don't exist.
 
 ### Repo location (as of 2026-07-29)
 Code has been copied into the org repo **/Users/dakotaward/code/firmware-production**
@@ -72,8 +88,7 @@ firmware-production and retire the staging dir. Do NOT maintain edits in both.
   (referenced by no code). Fixed 2026-07-29: main.h → `DQ_Pin=PA6/GPIOA`, removed
   ST1/ST2 defines + their GPIO init in main.c. phtemp main.c/main.h are now
   byte-identical to the reference tree. Rebuilt: build/phtemp.bin md5
-  ff448d83425fe6e78b5c7baf3e8f2b0d. **Pending: reflash (under-reset, NRST wired)
-  and confirm the temp probe reads.**
+  ff448d83425fe6e78b5c7baf3e8f2b0d; temp probe validated 2026-07-29.
 
 Build all: `cmake --preset default && cmake --build --preset default`
 One device: `cmake --build --preset valve`  → `build/<device>.{elf,bin,hex,map}`
@@ -134,12 +149,26 @@ TWO before done.
 
 ## Open threads / next
 
-- valve DONE (validated 2026-07-29). st-flash 1.8.0 handled ST-LINK V3 fine (V3
-  caveat did not bite). Flash cmd: `st-flash --connect-under-reset --reset write
-  build/valve.bin 0x08000000`.
-- NEXT: validate **phtemp** (Dakota chose to do phtemp before pump). Then pump
-  (watch TMC2209 UART / stepper — its HAL moved 1.2.5→1.2.6, highest regression
-  risk). A CAN harness exercising all 3 is worth it (3-device retest rule).
+- **NEXT: pump fault feedback → master. Plan is `PUMP_FAULT_FEEDBACK_PLAN.md`**
+  (read it before starting; corrected 2026-08-10 for the CANOpenGateway
+  master). Key facts: a GENERIC fault already reaches the bus (DIAG→EXTI→
+  FAULT state→TPDO1 StatusWord 0x0008 + TPDO2 PumpState/ErrorRegister every
+  SYNC; pump TPDOs use MCO_InitTPDOFull so the valve 0x1001 bug doesn't
+  apply). Gaps: no fault cause; EMCY compiled in (USE_EMCY=1,
+  MCOP_PushEMCY) but never called; TMC detail never leaves the board.
+  Phase 0 = verify existing path via gateway REST/SSE (debugger-forced
+  fault_active; do NOT short motor phases). Phase 1 = firmware-only (fix
+  gProcImg OOB bug, cause-coded 0x1001 bits, EMCY on fault entry/exit).
+  Phase 2 = EDS objects 0x2500-0x2503 (Windows; propagate to BOTH repos +
+  bridge image rebuild). Phase 3 = app layer (MIK web app), not gateway.
+- Pump logging = RTT (`probe-rs attach --chip STM32G431KBTx build/pump.elf`);
+  console noise: `[STEPPER]` step-rate block prints 1/s — set
+  DBG_STEPPER_ENABLE 0 for quieter sessions (timer proven correct). Known
+  cosmetic: first step-rate sample after a start straddles the accel ramp and
+  prints a bogus "TIMER/ISR fault" analysis line; converges 1.00x next sample.
+- valve DONE (2026-07-29); flash cmd: `st-flash --connect-under-reset --reset
+  write build/valve.bin 0x08000000`. A CAN harness exercising all 3 is still
+  worth building (3-device retest rule).
 - **Tagging DEFERRED by decision (2026-07-29): do not tag any device yet.** Revisit
   the tag/versioning scheme LATER, after more devices are validated. Do not raise
   tagging again until Dakota brings it up. (Context: tag = qualified release, needed
