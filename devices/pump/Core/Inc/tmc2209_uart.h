@@ -212,15 +212,22 @@ extern "C" {
  * It is QUADRATIC in current — halving the setting quarters the driver heat.
  *
  *   CS  | I_peak | I_rms  | driver | motor (1.4 Ohm)
- *   31  | 2.50 A | 1.77 A | 2.50 W | 8.8 W   <- previous setting, overheated
- *   22  | 1.80 A | 1.27 A | 1.29 W | 4.5 W   <- IRUN below (90% of 2.0 A rating)
+ *   31  | 2.50 A | 1.77 A | 2.50 W | 8.8 W   <- overheated (historical)
+ *   22  | 1.80 A | 1.27 A | 1.29 W | 4.5 W   <- old default; module at 80 C
+ *   18  | 1.48 A | 1.05 A | 0.88 W | 3.1 W   <- IRUN below (bench-landed)
  *   15  | 1.25 A | 0.88 A | 0.63 W | 2.2 W
  *    8  | 0.70 A | 0.50 A | 0.20 W | 0.7 W   <- IHOLD below
  *
- * IRUN is a STARTING point sized from the motor's 2.0 A rating, not from
- * measured demand. The nameplate is a thermal limit, not a requirement — walk
- * IRUN down until the pump stalls, then back off ~30%. This head is expected to
- * need well under 1 A rms.
+ * IRUN = 18 landed by bench sweep 2026-08-07 (24 V, 75 ml/min, loaded head,
+ * 10-15 min soaks, 5x breakaway incl. long-dwell per step, thermal imager):
+ *   22: module 82 C (thermal caution line)     — clean
+ *   18: module 68 C, 0.25 A supply             — clean, 5/5 breakaway  <- landed
+ *   15: module 57 C                            — runs; audible strain on spin-up
+ *   12: module 48 C                            — same strain, unchanged
+ *   10: buzzing in steady run                  — margin floor, do not use
+ * 18 carries ~41% peak-current margin over first audible strain (15) and ~2x
+ * over rough running (10), i.e. the "edge + ~30-40% back-off" rule.
+ * VSENSE must stay 0: 1.48 A peak exceeds the 1.38 A cap of the 180 mV range.
  *
  * IHOLD is deliberately lower than the 50%-of-IRUN rule of thumb: an instrument
  * sits energized between doses, standstill has no back-EMF and no airflow, and
@@ -231,7 +238,7 @@ extern "C" {
  * it caps peak near 1.38 A but gives finer granularity and halves sense-resistor
  * dissipation. Keep vsense = 0 while IRUN needs the full range.
  */
-#define TMC_IRUN_SETTING        22u  /* 1.80 A peak / 1.27 A rms */
+#define TMC_IRUN_SETTING        18u  /* 1.48 A peak / 1.05 A rms — landed by 2026-08-07 bench sweep */
 #define TMC_IHOLD_SETTING        8u  /* 0.70 A peak / 0.50 A rms */
 #define TMC_IHOLDDELAY_SETTING   6u  /* smooth run->hold ramp    */
 
