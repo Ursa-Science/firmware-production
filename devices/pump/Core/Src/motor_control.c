@@ -11,6 +11,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "motor_control.h"
 #include "stepper.h"
+#include "tmc2209_uart.h"
 #include "led_control.h"
 #include "mco_events.h"
 #include "mcop_inc.h"
@@ -1336,6 +1337,64 @@ static void MotorControl_PrintDiagnostics(void) {
 }
 
 /**
+ * @brief Periodic TMC2209 health poll — chip-reported current scale + faults
+ * @note  Reads DRV_STATUS over the TMC UART every 5 s while the motor is
+ *        moving. Gated by DBG_TMC_ENABLE via DBG_BLOCK(TMC): with the flag
+ *        0 the whole poll (including the UART transaction) compiles out, so
+ *        the TMC bus stays quiet. Runs in main-loop context; safe since
+ *        logging moved to RTT (nothing else touches USART2 at runtime).
+ */
+static void MotorControl_PrintTMCHealth(void) {
+	DBG_BLOCK(TMC) {
+		static uint32_t last_tmc_poll = 0;
+		uint32_t now = HAL_GetTick();
+
+		if (!Stepper_IsMoving() || (now - last_tmc_poll < 5000)) {
+			return;
+		}
+		last_tmc_poll = now;
+
+		uint32_t ds;
+		TMC2209_Status_t st = TMC2209_ReadDrvStatus(&ds);
+		if (st != TMC2209_OK) {
+			DBG_ERROR(TMC, "DRV_STATUS read failed (status=%d)", (int) st);
+			return;
+		}
+
+		/* CS_ACTUAL → peak mA: I_pk = (CS+1)/32 * 2.5 A (BTT V1.3, vsense=0,
+		 * R_sense 110 mΩ — same formula as the IRUN table in tmc2209_uart.h) */
+		uint32_t cs = (ds & DRV_STATUS_CS_MASK) >> 16;
+		uint32_t ma_peak = ((cs + 1u) * 2500u) / 32u;
+
+		DBG_PRINT(TMC, "DRV_STATUS=0x%08lX CS_actual=%lu (%lu mA pk)%s%s",
+				(unsigned long) ds, (unsigned long) cs, (unsigned long) ma_peak,
+				(ds & DRV_STATUS_STST) ? " standstill" : "",
+				(ds & DRV_STATUS_T120) ? " >120C" : "");
+
+		if (ds & DRV_STATUS_OT) {
+			DBG_ERROR(TMC, "OVERTEMP SHUTDOWN — driver stage disabled!");
+		} else if (ds & DRV_STATUS_OTPW) {
+			DBG_ERROR(TMC, "Overtemp pre-warning (>~120C) — reduce IRUN or add cooling");
+		}
+		if (ds & (DRV_STATUS_S2GA | DRV_STATUS_S2GB)) {
+			DBG_ERROR(TMC, "Short to GND: phase%s%s",
+					(ds & DRV_STATUS_S2GA) ? " A" : "",
+					(ds & DRV_STATUS_S2GB) ? " B" : "");
+		}
+		if (ds & (DRV_STATUS_S2VSA | DRV_STATUS_S2VSB)) {
+			DBG_ERROR(TMC, "Short to supply: phase%s%s",
+					(ds & DRV_STATUS_S2VSA) ? " A" : "",
+					(ds & DRV_STATUS_S2VSB) ? " B" : "");
+		}
+		if (ds & (DRV_STATUS_OLA | DRV_STATUS_OLB)) {
+			DBG_ERROR(TMC, "Open load: phase%s%s (check motor wiring)",
+					(ds & DRV_STATUS_OLA) ? " A" : "",
+					(ds & DRV_STATUS_OLB) ? " B" : "");
+		}
+	}
+}
+
+/**
  * @brief Public wrapper — runs all periodic diagnostics with a shared 1 s gate
  * @note  Each sub-function still keeps its own internal throttle (1 s or 5 s),
  *        so the gate here simply avoids calling into them every loop iteration.
@@ -1353,6 +1412,7 @@ void MotorControl_RunDiagnostics(void) {
 	MotorControl_PrintDiagnostics();
 	MotorControl_PrintTimerStats();
 	MotorControl_PrintStatus();
+	MotorControl_PrintTMCHealth();
 }
 
 /* MCO Event Handler ---------------------------------------------------------*/

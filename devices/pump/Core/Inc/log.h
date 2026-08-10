@@ -64,6 +64,7 @@ extern "C" {
 #define DBG_TIMER_ENABLE        1   /**< Timer/PWM hardware              */
 #define DBG_IDLE_ENABLE         0   /**< IDLE state monitoring           */
 #define DBG_CAN_ENABLE          0   /**< CAN/FDCAN diagnostics           */
+#define DBG_TMC_ENABLE          1   /**< TMC2209 runtime health poll (gates the UART reads too) */
 #define DBG_GENERAL_ENABLE      1   /**< General / boot-up messages      */
 
 /* Legacy alias */
@@ -90,6 +91,7 @@ typedef enum {
 	LOG_SYS_TIMER,
 	LOG_SYS_IDLE,
 	LOG_SYS_CAN,
+	LOG_SYS_TMC,
 	LOG_SYS_GENERAL,
 	LOG_SYS_COUNT
 } Log_Subsystem_t;

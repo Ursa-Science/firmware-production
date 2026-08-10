@@ -130,17 +130,24 @@ extern "C" {
 /* -------------------------------------------------------------------------- */
 /*  DRV_STATUS Register Bits (0x6F) — Read-only                               */
 /* -------------------------------------------------------------------------- */
-#define DRV_STATUS_STST         (1UL << 31) /* Standstill indicator     */
-#define DRV_STATUS_OLB          (1 << 30)   /* Open load phase B        */
-#define DRV_STATUS_OLA          (1 << 29)   /* Open load phase A        */
-#define DRV_STATUS_S2VSB        (1 << 28)   /* Short to supply phase B  */
-#define DRV_STATUS_S2VSA        (1 << 27)   /* Short to supply phase A  */
-#define DRV_STATUS_S2GB         (1 << 26)   /* Short to GND phase B     */
-#define DRV_STATUS_S2GA         (1 << 25)   /* Short to GND phase A     */
-#define DRV_STATUS_OT           (1 << 24)   /* Overtemperature           */
-#define DRV_STATUS_OTPW         (1 << 23)   /* Overtemp pre-warning      */
-#define DRV_STATUS_CS_MASK      0x001F0000  /* Current scale (bits 16-20)*/
-#define DRV_STATUS_SG_MASK      0x000003FF  /* StallGuard result (bits 0-9) */
+/* Layout per TMC2209 datasheet §5.4.2 (TMC2208/2209 family). The previous
+ * defines here used a TMC2130-style layout (flags in the high byte) and
+ * decoded garbage — on the TMC2209 the fault flags are bits 0..11. */
+#define DRV_STATUS_STST         (1UL << 31) /* Standstill indicator      */
+#define DRV_STATUS_STEALTH      (1UL << 30) /* StealthChop active        */
+#define DRV_STATUS_CS_MASK      0x001F0000  /* CS_ACTUAL (bits 16-20)    */
+#define DRV_STATUS_T157         (1 << 11)   /* Temp threshold 157 C      */
+#define DRV_STATUS_T150         (1 << 10)   /* Temp threshold 150 C      */
+#define DRV_STATUS_T143         (1 << 9)    /* Temp threshold 143 C      */
+#define DRV_STATUS_T120         (1 << 8)    /* Temp threshold 120 C      */
+#define DRV_STATUS_OLB          (1 << 7)    /* Open load phase B         */
+#define DRV_STATUS_OLA          (1 << 6)    /* Open load phase A         */
+#define DRV_STATUS_S2VSB        (1 << 5)    /* Short to supply phase B   */
+#define DRV_STATUS_S2VSA        (1 << 4)    /* Short to supply phase A   */
+#define DRV_STATUS_S2GB         (1 << 3)    /* Short to GND phase B      */
+#define DRV_STATUS_S2GA         (1 << 2)    /* Short to GND phase A      */
+#define DRV_STATUS_OT           (1 << 1)    /* Overtemperature shutdown  */
+#define DRV_STATUS_OTPW         (1 << 0)    /* Overtemp pre-warning      */
 
 /* -------------------------------------------------------------------------- */
 /*  Chopper Mode Selection                                                    */
