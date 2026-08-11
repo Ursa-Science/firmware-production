@@ -175,7 +175,10 @@ TWO before done.
   Remaining item (4), optional dedup refactors: TMC read/ReadDiag paths,
   hybrid-stop sequence (4 copies), pwm_control.arr_value mirror. The dose
   complete/timeout dedup is CANCELLED — superseded by the dose-transfer plan
-  below.
+  below. Comment sweep `ee232dc` (plan markers stripped, comments distilled)
+  HW-VALIDATED 2026-08-11; pump RTT strings renamed: "Phase 3.2:" prefixes
+  gone, "Fix16:" gone, "Phase1→Phase2 latency" → "Deferred stop: ISR→Poll
+  latency" — update any log greps.
 - **PLANNED, BLOCKED: strip dosing engine from pump firmware → MIK owns
   dosing.** Plan + FE-conversation agenda: `PUMP_DOSE_TRANSFER_PLAN.md`.
   Do NOT start until Dakota's in-depth FE conversation settles the open
