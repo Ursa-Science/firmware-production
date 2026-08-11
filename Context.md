@@ -161,6 +161,13 @@ TWO before done.
   gProcImg OOB bug, cause-coded 0x1001 bits, EMCY on fault entry/exit).
   Phase 2 = EDS objects 0x2500-0x2503 (Windows; propagate to BOTH repos +
   bridge image rebuild). Phase 3 = app layer (MIK web app), not gateway.
+- **Pump stepper-code audit (2026-08-11): pure-removal pass DONE** (`d14edb7`,
+  −483 lines dead API/state, valve/phtemp byte-identical; NOT yet hardware
+  retested). Remaining audit items, in order: (2) collapse microstep pin
+  machinery to fixed 1/8 (MS pins are UART-address-only now), (3) fix stale
+  IRUN=22/0x00061608 comments in tmc2209_uart.c (landed value is 18), (4)
+  optional dedup refactors — TMC read/ReadDiag paths, hybrid-stop sequence
+  (4 copies), dose complete/timeout blocks, pwm_control.arr_value mirror.
 - Pump logging = RTT (`probe-rs attach --chip STM32G431KBTx build/pump.elf`);
   console noise: `[STEPPER]` step-rate block prints 1/s — set
   DBG_STEPPER_ENABLE 0 for quieter sessions (timer proven correct). Known
