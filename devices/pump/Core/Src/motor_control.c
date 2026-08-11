@@ -30,23 +30,23 @@ extern TIM_HandleTypeDef htim4;  // Green LED - TIM4 CH1
 
 /* Private defines -----------------------------------------------------------*/
 
-// 17HS19-2004S1 NEMA 17, DIRECT DRIVE (no gearbox):
-//   200 full steps/rev × 8 microsteps = 1600 timer pulses per pump revolution.
-// Numerically identical to the WPX-1's 200 motor steps × 8 gearbox, so this
-// value is UNCHANGED across the motor migration — only its meaning changed
-// (microsteps per rev, not gear-multiplied full steps per rev).
-// TMC2209 GCONF.MSTEP_REG_SELECT=1 via IFCNT-verified UART write;
-// CHOPCONF.MRES=5 (1/8 µstep), MicroPlyer interpolates to 256 internally.
+// 17HS19-2004S1 NEMA 17, DIRECT DRIVE (no gearbox): timer pulses per pump
+// revolution. Derived from the single microstep knob (TMC_MICROSTEP in
+// tmc2209_uart.h) so re-tuning the resolution keeps all dosing math
+// consistent automatically. At the default 1/8: 200 × 8 = 1600 pulses/rev —
+// numerically identical to the WPX-1's 200 motor steps × 8 gearbox.
 // Each timer pulse = 1 microstep.
-#define STEPS_PER_REV           1600
+#define STEPS_PER_REV           (STEPPER_STEPS_PER_REV * TMC_MICROSTEP)
 
 // Calibration Constants
-// BASE_STEPS_PER_ML: Theoretical value based on target of 100 ml/min @ 90 RPM
-// Calculation: (90 RPM * 1600 steps/rev) / 100 ml/min = 1440 steps/ml
-// NOTE: only valid while the same pump head displaces the same ml/rev. Re-derive
-// from the catch test; fine trim belongs in the front end via
+// BASE_STEPS_PER_ML: from the head's displacement — 100 ml/min @ 90 RPM, i.e.
+// 0.9 rev per ml: (90 RPM * STEPS_PER_REV) / 100 ml/min = 0.9 * STEPS_PER_REV
+// (= 1440.0f exactly at the default 1/8 — the 9/10 integer form avoids the
+// 0.9f rounding error). Scales with TMC_MICROSTEP by construction. NOTE: only
+// valid while the same pump head displaces the same ml/rev. Re-derive from
+// the catch test; fine trim belongs in the front end via
 // FlowCorrectionFactor (OD 0x2200), not baked in here.
-#define BASE_STEPS_PER_ML       1440.0f
+#define BASE_STEPS_PER_ML       ((float) (STEPS_PER_REV * 9) / 10.0f)
 
 // Speed ceiling is enforced by mlPerMin_to_rpm() clamping to
 // STEPPER_MAX_SPEED_RPM (stepper.h) — no separate limit here.
@@ -1299,33 +1299,9 @@ static void MotorControl_PrintDiagnostics(void) {
 				HAL_GPIO_ReadPin(GPIOA, DIR_Pin),
 				HAL_GPIO_ReadPin(GPIOA, ENABLE_Pin));
 
-		/* Microstep mode */
-		const char *microstep_str;
-		switch (status.microstep) {
-		case MICROSTEP_1:
-			microstep_str = "full-step(UART)";
-			break;
-		case MICROSTEP_2:
-			microstep_str = "2-ustep(UART)";
-			break;
-		case MICROSTEP_8:
-			microstep_str = "8-ustep(MS1=0,MS2=0)";
-			break;
-		case MICROSTEP_16:
-			microstep_str = "16-ustep(MS1=1,MS2=1)";
-			break;
-		case MICROSTEP_32:
-			microstep_str = "32-ustep(MS1=1,MS2=0)";
-			break;
-		case MICROSTEP_64:
-			microstep_str = "64-ustep(MS1=0,MS2=1)";
-			break;
-		default:
-			microstep_str = "UNKNOWN";
-			break;
-		}
-		(void) microstep_str; /* Suppress unused warning when debug macros disabled */
-		DBG_PRINT_V(MOTOR, "Microstep=%s, Dir=%s, Enabled=%d", microstep_str,
+		/* Microstep mode (CHOPCONF.MRES, from TMC_MICROSTEP) */
+		DBG_PRINT_V(MOTOR, "Microstep=1/%u (UART), Dir=%s, Enabled=%d",
+				(unsigned) status.microstep,
 				status.direction == STEPPER_DIR_CW ? "CW" : "CCW",
 				status.enabled);
 

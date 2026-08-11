@@ -872,17 +872,18 @@ static void TMC2209_WriteBlindFallback(uint32_t brr_base, uint32_t gconf_val,
  *     MSTEP_REG_SELECT  = 1   Microstep resolution from CHOPCONF register
  *     MULTISTEP_FILT    = 1   Enable STEP pulse input filter
  *
- *   CHOPCONF (0x6C) = 0x15010053
+ *   CHOPCONF (0x6C) = 0x15010053 (at the default TMC_MICROSTEP = 8)
  *     TOFF  = 3               Off-time (enables chopper — TOFF=0 disables!)
  *     HSTRT = 5               Hysteresis start
  *     HEND  = 0               Hysteresis end
  *     TBL   = 2               Blank time 36 clocks (stable current sensing)
- *     VSENSE = 0              V_fs 325 mV — required for IRUN to reach 1.8 A
- *     MRES  = 5               1/8 µstep → 1600 µsteps/rev (200 × 8, direct drive)
- *     INTPOL = 1              MicroPlyer interpolates 1/8→256 internally
+ *     VSENSE = 0              V_fs 325 mV — required for IRUN's current range
+ *     MRES  = TMC_MRES        From TMC_MICROSTEP (default 1/8 → 1600 µsteps/rev)
+ *     INTPOL = 1              MicroPlyer interpolates to 256 internally
  *
- *   IHOLD_IRUN (0x10) = 0x00061608  [WRITE-ONLY register — no read-back]
- *     IRUN  = 22              1.80 A peak / 1.27 A rms (90% of the 2.0 A rating)
+ *   IHOLD_IRUN (0x10) = 0x00061208  [WRITE-ONLY register — no read-back]
+ *     IRUN  = 18              1.48 A peak / 1.05 A rms (2026-08-07 bench sweep;
+ *                             table + rationale in tmc2209_uart.h)
  *     IHOLD = 8               0.70 A peak — standstill is the worst thermal case
  *     IHOLDDELAY = 6          Smooth run→hold current transition
  *
@@ -950,26 +951,27 @@ TMC2209_Status_t TMC2209_Init(void) {
 			;
 	/* SpreadCycle = 0x000001C4, StealthChop/Hybrid = 0x000001C0 */
 
-	/* CHOPCONF — vsense stays 0 (V_fs 325 mV) so IRUN can reach 1.8 A peak. */
+	/* CHOPCONF — vsense stays 0 (V_fs 325 mV) so IRUN keeps its full range. */
 	const uint32_t chopconf_val = (3u << CHOPCONF_TOFF_SHIFT)
 			| (5u << CHOPCONF_HSTRT_SHIFT) | (0u << CHOPCONF_HEND_SHIFT)
 			| (2u << CHOPCONF_TBL_SHIFT)
-			| ((uint32_t) MRES_8 << CHOPCONF_MRES_SHIFT)
+			| ((uint32_t) TMC_MRES << CHOPCONF_MRES_SHIFT)
 			| CHOPCONF_INTPOL;
-	/* = 0x15010053 — MRES_8 is the register encoding (5) for 1/8 microstep.
+	/* = 0x15010053 at the default TMC_MICROSTEP = 8 (MRES encoding 5):
 	 * 200 full steps x 8 = 1600 pulses per pump rev, numerically identical to
 	 * the WPX-1's 200 x 8 gearbox, so the entire step-frequency domain in
 	 * stepper.c is unchanged. INTPOL still interpolates to 256 internally. */
 
 	/* IHOLD_IRUN — see the current table in tmc2209_uart.h. Sized for the
-	 * 17HS19-2004S1 (2.0 A/phase): IRUN 22 = 1.80 A peak (90% of rating),
-	 * IHOLD 8 = 0.70 A peak. The previous IRUN=31 (2.50 A peak, 2.5 W in the
-	 * driver) is what cooked the board on the WPX-1. */
+	 * 17HS19-2004S1 (2.0 A/phase): IRUN 18 = 1.48 A peak, landed by the
+	 * 2026-08-07 bench sweep (do not re-tune without new data). IHOLD 8 =
+	 * 0.70 A peak. The old IRUN=31 (2.50 A peak, 2.5 W in the driver) is what
+	 * cooked the board on the WPX-1. */
 	const uint32_t ihold_irun_val =
 			((uint32_t) TMC_IHOLDDELAY_SETTING << IHOLDDELAY_SHIFT)
 					| ((uint32_t) TMC_IRUN_SETTING << IRUN_SHIFT)
 					| ((uint32_t) TMC_IHOLD_SETTING << IHOLD_SHIFT);
-	/* = 0x00061608 */
+	/* = 0x00061208 (IHOLDDELAY=6, IRUN=18, IHOLD=8) */
 
 	const uint32_t brr_save = USART2->BRR;
 	const uint32_t cr1_save = USART2->CR1;

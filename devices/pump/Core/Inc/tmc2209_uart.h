@@ -111,6 +111,46 @@ extern "C" {
 #define MRES_FULLSTEP           8   /* Full step                    */
 
 /* -------------------------------------------------------------------------- */
+/*  Microstep Resolution — SINGLE tuning knob                                 */
+/* -------------------------------------------------------------------------- */
+/*
+ * TMC_MICROSTEP is the ONE place microstep resolution is set. It drives:
+ *   - CHOPCONF.MRES written at init (the resolution the chip actually runs)
+ *   - every step-frequency/ARR calculation in stepper.c
+ *   - STEPS_PER_REV and steps-per-ml dosing math in motor_control.c
+ * so changing it here retunes the whole pipeline consistently.
+ *
+ * Resolution is UART-only on this board: GCONF.MSTEP_REG_SELECT=1, and the
+ * MS1/MS2 pins are the UART slave address (held 0/0 = addr 0x00) — they never
+ * select resolution. NOTE: 8 is the one value with a safe pin-mode fallback
+ * (MS1=0/MS2=0 also encodes 1/8 if the UART config were ever lost). At any
+ * other value a lost config would run at 1/8 while the math assumes this
+ * value — init is IFCNT-verified and fails loudly, but re-validate dosing
+ * after any change. INTPOL=1 interpolates to 256 internally regardless.
+ *
+ * Valid values: 1, 2, 4, 8, 16, 32, 64, 128, 256 (microsteps per full step).
+ */
+#ifndef TMC_MICROSTEP
+#define TMC_MICROSTEP           8u
+#endif
+
+#if (TMC_MICROSTEP != 1) && (TMC_MICROSTEP != 2) && (TMC_MICROSTEP != 4) \
+	&& (TMC_MICROSTEP != 8) && (TMC_MICROSTEP != 16) && (TMC_MICROSTEP != 32) \
+	&& (TMC_MICROSTEP != 64) && (TMC_MICROSTEP != 128) && (TMC_MICROSTEP != 256)
+#error "TMC_MICROSTEP must be a power of two in 1..256"
+#endif
+
+/* CHOPCONF.MRES encoding for TMC_MICROSTEP (256→0 ... 1→8) */
+#define TMC_MRES  ((TMC_MICROSTEP) == 256 ? MRES_256 : \
+                   (TMC_MICROSTEP) == 128 ? MRES_128 : \
+                   (TMC_MICROSTEP) ==  64 ? MRES_64  : \
+                   (TMC_MICROSTEP) ==  32 ? MRES_32  : \
+                   (TMC_MICROSTEP) ==  16 ? MRES_16  : \
+                   (TMC_MICROSTEP) ==   8 ? MRES_8   : \
+                   (TMC_MICROSTEP) ==   4 ? MRES_4   : \
+                   (TMC_MICROSTEP) ==   2 ? MRES_2   : MRES_FULLSTEP)
+
+/* -------------------------------------------------------------------------- */
 /*  IHOLD_IRUN Register Fields (0x10)                                         */
 /* -------------------------------------------------------------------------- */
 #define IHOLD_SHIFT             0   /* Standstill current (bits 0-4)   */

@@ -9,6 +9,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "stepper.h"
+#include "tmc2209_uart.h" /* TMC_MICROSTEP — the one microstep knob */
 #include "log.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -18,7 +19,6 @@
 typedef struct {
 	Stepper_State_t state;
 	Stepper_Direction_t direction;
-	Stepper_Microstep_t microstep;
 	uint16_t speed_rpm;           // Direct RPM control
 	int32_t current_position;
 	uint32_t current_arr;
@@ -106,7 +106,6 @@ static bool idle_first_check = true;
 /* Private function prototypes -----------------------------------------------*/
 static void Stepper_StartPWM(void);
 static void Stepper_StopPWM(void);
-static void Stepper_ConfigureMicrostepPins(Stepper_Microstep_t microstep);
 static void Stepper_UpdatePWM(void);
 
 /* StopPWM Helper Function ---------------------------------------------------*/
@@ -148,7 +147,6 @@ bool Stepper_Init(void) {
 	// Initialize control structure
 	stepper.state = STEPPER_IDLE;
 	stepper.direction = STEPPER_DIR_CW;
-	stepper.microstep = MICROSTEP_8; // TMC2209: CHOPCONF.MRES=5 (1/8 µstep) via UART write, INTPOL=1 (256 internal interpolation)
 	stepper.speed_rpm = SPEED_NORMAL_RPM;
 	stepper.current_position = 0;
 	stepper.enabled = false;
@@ -156,7 +154,7 @@ bool Stepper_Init(void) {
 	stepper.accel_remainder = 0;
 
 	// Initialize PWM control
-	stepper.pwm_control.arr_value = TIMER_ARR(SPEED_NORMAL_RPM, MICROSTEP_8);
+	stepper.pwm_control.arr_value = TIMER_ARR(SPEED_NORMAL_RPM, TMC_MICROSTEP);
 	stepper.pwm_control.duty_percent = PWM_DUTY_DEFAULT;
 
 	// DEFERRED STOP: Initialize stop_pending flag
@@ -168,13 +166,11 @@ bool Stepper_Init(void) {
 	HAL_GPIO_WritePin(STEPPER_ENABLE_PORT, STEPPER_ENABLE_PIN, GPIO_PIN_SET); // Disabled (active low)
 	HAL_GPIO_WritePin(STEPPER_DIR_PORT, STEPPER_DIR_PIN, GPIO_PIN_RESET);  // CW
 
-	/* TMC2209: MS1=0, MS2=0 → UART slave address 0x00.
-	 * MSTEP_REG_SELECT=1 in GCONF: MS pins are address-only, CHOPCONF.MRES
-	 * controls microstepping. UART writes verified via IFCNT.
-	 * Firmware uses MICROSTEP_8 (1/8 µstep) for all step rate calculations —
-	 * 200 full steps × 8 = 1600 pulses per pump rev. MS1=0/MS2=0 is also the
-	 * pin encoding for 1/8, so a lost UART config lands on the same resolution. */
-	Stepper_ConfigureMicrostepPins(MICROSTEP_8);
+	/* TMC2209: MS1=0, MS2=0 → UART slave address 0x00. With
+	 * GCONF.MSTEP_REG_SELECT=1 the MS pins are address-only; resolution comes
+	 * from CHOPCONF.MRES, set from TMC_MICROSTEP at TMC2209_Init(). */
+	HAL_GPIO_WritePin(STEPPER_MS1_PORT, STEPPER_MS1_PIN, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(STEPPER_MS2_PORT, STEPPER_MS2_PIN, GPIO_PIN_RESET);
 
 	// Configure timer for PWM generation
 	__HAL_TIM_SET_PRESCALER(&htim1, TIMER_PRESCALER);
@@ -187,7 +183,7 @@ bool Stepper_Init(void) {
 	TIM1->EGR = TIM_EGR_UG;
 
 	// Set initial speed from default RPM
-	uint32_t init_arr = TIMER_ARR(SPEED_NORMAL_RPM, MICROSTEP_8);
+	uint32_t init_arr = TIMER_ARR(SPEED_NORMAL_RPM, TMC_MICROSTEP);
 	stepper.current_arr = init_arr;
 	stepper.target_arr = init_arr;
 	stepper.pwm_control.arr_value = init_arr;
@@ -363,7 +359,7 @@ void Stepper_SetSpeedRPM(uint16_t rpm) {
 	if (rpm == 0) {
 		stepper.target_arr = 0xFFFF;  // Stopped
 	} else {
-		stepper.target_arr = TIMER_ARR(rpm, stepper.microstep);
+		stepper.target_arr = TIMER_ARR(rpm, TMC_MICROSTEP);
 	}
 
 	// If not running, update immediately
@@ -437,7 +433,7 @@ void Stepper_GetStatus(Stepper_Status_t *status) {
 
 	status->state = stepper.state;
 	status->direction = stepper.direction;
-	status->microstep = stepper.microstep;
+	status->microstep = TMC_MICROSTEP;
 	status->current_position = stepper.current_position;
 	status->enabled = stepper.enabled;
 	status->error = (stepper.state == STEPPER_ERROR);
@@ -650,7 +646,7 @@ static void Stepper_StartPWM(void) {
 static void Stepper_ConfigureAcceleration(void) {
 	// Calculate final ARR value from RPM speed setting
 	uint16_t rpm = stepper.speed_rpm > 0 ? stepper.speed_rpm : SPEED_NORMAL_RPM;
-	uint32_t final_arr = TIMER_ARR(rpm, stepper.microstep);
+	uint32_t final_arr = TIMER_ARR(rpm, TMC_MICROSTEP);
 	stepper.target_arr = final_arr;
 
 	// LOW SPEED BYPASS: Skip acceleration ramp at low speeds (high ARR values)
@@ -665,7 +661,7 @@ static void Stepper_ConfigureAcceleration(void) {
 		// c_0 = 0.676 * TIMER_FREQ_HZ * sqrt(2.0 / alpha)
 		// This uses floating-point but is called only once at motor start, not in ISR.
 		double alpha = (double) ACCEL_RATE_RPM_PER_SEC
-				* (double) STEPPER_STEPS_PER_REV * (double) stepper.microstep
+				* (double) STEPPER_STEPS_PER_REV * (double) TMC_MICROSTEP
 				/ 60.0;
 		uint32_t c_0 = (uint32_t) (0.676 * (double) TIMER_FREQ_HZ
 				* sqrt(2.0 / alpha));
@@ -778,60 +774,6 @@ static void Stepper_UpdatePWM(void) {
 
 
 /**
- * @brief Configure microstep pins for TMC2209
- * @note  TMC2209 MS1/MS2 mapping (different from A4988!):
- *        MS1=0, MS2=0 →  8 µsteps (UART addr 0x00)
- *        MS1=1, MS2=0 → 32 µsteps (UART addr 0x01)
- *        MS1=0, MS2=1 → 64 µsteps (UART addr 0x02)
- *        MS1=1, MS2=1 → 16 µsteps (UART addr 0x03)
- *        PA5 is the TMC2209 module's DIAG output (fault input via EXTI) —
- *        chopper mode is set via UART only.
- */
-static void Stepper_ConfigureMicrostepPins(Stepper_Microstep_t microstep) {
-	switch (microstep) {
-	case MICROSTEP_1:
-		// UART-configured: CHOPCONF.mres=8 sets full step via register.
-		// Fall through — MS1=0, MS2=0 for UART slave address 0x00.
-	case MICROSTEP_2:
-		// UART-configured: CHOPCONF.mres=7 sets 2 µsteps via register.
-		// MS1=0, MS2=0 → UART slave address 0x00 (with MSTEP_REG_SELECT=1,
-		// MS pins no longer control microstep resolution).
-		HAL_GPIO_WritePin(STEPPER_MS1_PORT, STEPPER_MS1_PIN, GPIO_PIN_RESET);
-		HAL_GPIO_WritePin(STEPPER_MS2_PORT, STEPPER_MS2_PIN, GPIO_PIN_RESET);
-		break;
-
-	case MICROSTEP_8:
-		// MS1=0, MS2=0 → 8 µsteps, UART addr 0x00
-		HAL_GPIO_WritePin(STEPPER_MS1_PORT, STEPPER_MS1_PIN, GPIO_PIN_RESET);
-		HAL_GPIO_WritePin(STEPPER_MS2_PORT, STEPPER_MS2_PIN, GPIO_PIN_RESET);
-		break;
-
-	case MICROSTEP_32:
-		// MS1=1, MS2=0 → 32 µsteps, UART addr 0x01
-		HAL_GPIO_WritePin(STEPPER_MS1_PORT, STEPPER_MS1_PIN, GPIO_PIN_SET);
-		HAL_GPIO_WritePin(STEPPER_MS2_PORT, STEPPER_MS2_PIN, GPIO_PIN_RESET);
-		break;
-
-	case MICROSTEP_64:
-		// MS1=0, MS2=1 → 64 µsteps, UART addr 0x02
-		HAL_GPIO_WritePin(STEPPER_MS1_PORT, STEPPER_MS1_PIN, GPIO_PIN_RESET);
-		HAL_GPIO_WritePin(STEPPER_MS2_PORT, STEPPER_MS2_PIN, GPIO_PIN_SET);
-		break;
-
-	case MICROSTEP_16:
-		// MS1=1, MS2=1 → 16 µsteps, UART addr 0x03
-		HAL_GPIO_WritePin(STEPPER_MS1_PORT, STEPPER_MS1_PIN, GPIO_PIN_SET);
-		HAL_GPIO_WritePin(STEPPER_MS2_PORT, STEPPER_MS2_PIN, GPIO_PIN_SET);
-		break;
-	}
-
-	// NOTE: PA5 is NOT a chopper-mode pin — the PCB routes the module's DIAG
-	// output there (fault input, EXTI). Chopper mode (SpreadCycle vs
-	// StealthChop) is set via the UART GCONF register only; the TMC2209
-	// defaults to StealthChop without UART configuration.
-}
-
-/**
  * @brief Poll for deferred stop completion
  * @note Call this from main loop (MotorControl_Process) to complete deferred stop
  *       This implements the HYBRID DEFERRED STOP PATTERN to prevent spurious pulses
@@ -920,9 +862,9 @@ void Stepper_PrintStepRateDiagnostics(void) {
 		// Calculate actual RPM from measured step rate
 		// RPM = (steps_per_sec * 60) / (steps_per_rev * microstep)
 		uint32_t actual_rpm = (measured_steps_per_sec * 60)
-				/ (STEPPER_STEPS_PER_REV * stepper.microstep);
+				/ (STEPPER_STEPS_PER_REV * TMC_MICROSTEP);
 		uint32_t expected_rpm = (expected_steps_per_sec * 60)
-				/ (STEPPER_STEPS_PER_REV * stepper.microstep);
+				/ (STEPPER_STEPS_PER_REV * TMC_MICROSTEP);
 
 		// Calculate ratio
 		uint32_t ratio_x100 = 0;
@@ -942,7 +884,7 @@ void Stepper_PrintStepRateDiagnostics(void) {
 				ratio_x100 / 100, ratio_x100 % 100);
 		DBG_PRINT(STEPPER, "  Current ARR: %lu", stepper.current_arr);
 		DBG_PRINT(STEPPER, "  Target ARR: %lu", stepper.target_arr);
-		DBG_PRINT(STEPPER, "  Microstep Mode: %d", stepper.microstep);
+		DBG_PRINT(STEPPER, "  Microstep Mode: 1/%u", (unsigned) TMC_MICROSTEP);
 		// Analysis
 		if (ratio_x100 >= 95 && ratio_x100 <= 105) {
 			DBG_PRINT(STEPPER,

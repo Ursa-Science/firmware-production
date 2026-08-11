@@ -46,31 +46,11 @@ typedef enum {
 	STEPPER_DIR_CW = 0, STEPPER_DIR_CCW = 1
 } Stepper_Direction_t;
 
-/**
- * @brief Microstep Resolution
- * @note  TMC2209 MS1/MS2 pin mapping (standalone, no UART):
- *          MS1=0, MS2=0 →  8 µsteps  (UART addr 0x00)
- *          MS1=1, MS2=0 → 32 µsteps  (UART addr 0x01)
- *          MS1=0, MS2=1 → 64 µsteps  (UART addr 0x02)
- *          MS1=1, MS2=1 → 16 µsteps  (UART addr 0x03)
- *        MicroPlyer internally interpolates to 256 regardless.
- *
- *        CURRENT CONFIG (NEMA 17 direct drive): MICROSTEP_8 via CHOPCONF.mres=5.
- *        With MSTEP_REG_SELECT=1 in GCONF, MS pins become UART address only.
- *        MS1=0, MS2=0 kept for UART slave address 0x00 — which is also the
- *        pin-mode encoding for 1/8, so if the UART config is ever lost the chip
- *        falls back to the SAME resolution and the step math still holds.
- *        INTPOL=1: MicroPlyer interpolates 1/8 → 256 internally.
- */
-typedef enum {
-	MICROSTEP_1 = 1,     // UART-configured: CHOPCONF.mres=8 full step
-	MICROSTEP_2 = 2,        // UART-configured: CHOPCONF.mres=7
-	MICROSTEP_8 = 8,        // CHOPCONF.mres=5; also MS1=0/MS2=0 in pin mode
-	MICROSTEP_16 = 16,       // MS1=1, MS2=1
-	MICROSTEP_32 = 32,       // MS1=1, MS2=0
-	MICROSTEP_64 = 64        // MS1=0, MS2=1
-} Stepper_Microstep_t;
-
+/* Microstep resolution is a SINGLE compile-time knob: TMC_MICROSTEP in
+ * tmc2209_uart.h. It sets CHOPCONF.MRES at init and feeds every step/ARR
+ * calculation here plus the dosing math in motor_control.c. MS1/MS2 are the
+ * TMC UART slave address pins (held 0/0 = addr 0x00) and never select
+ * resolution on this board. */
 
 /**
  * @brief PWM Control Parameters
@@ -88,7 +68,7 @@ typedef struct {
 typedef struct {
 	Stepper_State_t state;
 	Stepper_Direction_t direction;
-	Stepper_Microstep_t microstep;
+	uint16_t microstep;          // µsteps per full step (TMC_MICROSTEP)
 	int32_t current_position;
 	bool enabled;
 	bool error;
@@ -96,9 +76,10 @@ typedef struct {
 
 /* Exported constants --------------------------------------------------------*/
 /* 17HS19-2004S1 NEMA 17, direct drive (no gearbox): 1.8°/step = 200 full steps
- * per pump revolution. Always used as STEPPER_STEPS_PER_REV × microstep, so with
- * MICROSTEP_8 the product is 200 × 8 = 1600 pulses/rev — numerically identical to
- * the WPX-1's 200 × 8 gearbox. Every ARR/ramp constant below keeps its meaning. */
+ * per pump revolution. Always used as STEPPER_STEPS_PER_REV × TMC_MICROSTEP, so
+ * at the default 1/8 the product is 200 × 8 = 1600 pulses/rev — numerically
+ * identical to the WPX-1's 200 × 8 gearbox. Every ARR/ramp constant below keeps
+ * its meaning at that default. */
 #define STEPPER_STEPS_PER_REV       200
 #define STEPPER_MAX_SPEED_RPM       120    // Maximum safe RPM — carried over from the
                                            // WPX-1 (tested 12/30/2025); NOT yet
