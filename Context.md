@@ -173,8 +173,16 @@ TWO before done.
   `1112e73` HW-VALIDATED 2026-08-11 (bench log: ARRs and flow→RPM mappings
   bit-identical to pre-refactor; real AVR446 decel ramp exercised and clean).
   Remaining item (4), optional dedup refactors: TMC read/ReadDiag paths,
-  hybrid-stop sequence (4 copies), dose complete/timeout blocks,
-  pwm_control.arr_value mirror.
+  hybrid-stop sequence (4 copies), pwm_control.arr_value mirror. The dose
+  complete/timeout dedup is CANCELLED — superseded by the dose-transfer plan
+  below.
+- **PLANNED, BLOCKED: strip dosing engine from pump firmware → MIK owns
+  dosing.** Plan + FE-conversation agenda: `PUMP_DOSE_TRANSFER_PLAN.md`.
+  Do NOT start until Dakota's in-depth FE conversation settles the open
+  questions (volume truth, stop-latency tolerance, heartbeat runaway
+  failsafe, OD contract). EDS changes must be batched with fault-feedback
+  Phase 2 objects into ONE regen cycle. Firmware ends up a plain CiA 402
+  velocity device (~400 lines of dose state out of motor_control.c).
 - Pump logging = RTT (`probe-rs attach --chip STM32G431KBTx build/pump.elf`);
   console noise: `[STEPPER]` step-rate block prints 1/s — set
   DBG_STEPPER_ENABLE 0 for quieter sessions (timer proven correct). Known
