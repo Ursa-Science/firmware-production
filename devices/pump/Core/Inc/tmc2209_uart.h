@@ -62,13 +62,6 @@ extern "C" {
 #define TMC2209_TPOWERDOWN      0x11
 #define TMC2209_TSTEP           0x12  /* Measured time between steps */
 #define TMC2209_TPWMTHRS        0x13  /* StealthChop/SpreadCycle velocity threshold */
-#define TMC2209_TCOOLTHRS       0x14  /* CoolStep & StallGuard enable velocity */
-#define TMC2209_VACTUAL         0x22
-
-/* StallGuard */
-#define TMC2209_SGTHRS          0x40  /* StallGuard threshold (0-255) */
-#define TMC2209_SG_RESULT       0x41  /* StallGuard result (0-510) */
-#define TMC2209_COOLCONF        0x42
 
 /* Chopper control */
 #define TMC2209_CHOPCONF        0x6C
@@ -381,13 +374,6 @@ TMC2209_Status_t TMC2209_WriteRegister(uint8_t reg, uint32_t value);
  * @retval TMC2209_OK on success
  */
 TMC2209_Status_t TMC2209_ReadRegister(uint8_t reg, uint32_t *value);
-
-/**
- * @brief  Read StallGuard result (runtime diagnostic)
- * @param  sg_result  Pointer to store SG_RESULT value (0-510)
- * @retval TMC2209_OK on success
- */
-TMC2209_Status_t TMC2209_ReadStallGuard(uint16_t *sg_result);
 
 /**
  * @brief  Read DRV_STATUS register (runtime diagnostic)

@@ -90,7 +90,6 @@ typedef struct {
 	Stepper_Direction_t direction;
 	Stepper_Microstep_t microstep;
 	int32_t current_position;
-	uint32_t target_steps;
 	bool enabled;
 	bool error;
 } Stepper_Status_t;
@@ -104,12 +103,9 @@ typedef struct {
 #define STEPPER_MAX_SPEED_RPM       120    // Maximum safe RPM — carried over from the
                                            // WPX-1 (tested 12/30/2025); NOT yet
                                            // re-established for the NEMA 17 (Phase 5)
-#define STEPPER_TIMEOUT_MS          5000  // 5 second timeout (was 30s)
 
-/* PWM and Current Control Constants */
-#define PWM_DUTY_MIN                4    // Minimum duty cycle %
-#define PWM_DUTY_MAX                50   // Maximum duty cycle %
-#define PWM_DUTY_DEFAULT            8    // Default duty cycle % (Fix 20: reverted to 8% — old working code proved 8% sufficient; 50% created excess EMI/noise on custom PCB)
+/* PWM step pulse width */
+#define PWM_DUTY_DEFAULT            8    // Duty cycle % (Fix 20: reverted to 8% — old working code proved 8% sufficient; 50% created excess EMI/noise on custom PCB)
 /* Exported functions --------------------------------------------------------*/
 /**
  * @brief Initialize stepper motor driver
@@ -151,16 +147,8 @@ void Stepper_Poll(void);
 void Stepper_SetDirection(Stepper_Direction_t direction);
 
 /**
- * @brief Set microstep resolution
- * @param microstep Resolution (1, 2, 8, 16, 32, or 64) — TMC2209 supported values
- * @retval true if valid setting
- */
-bool Stepper_SetMicrostep(Stepper_Microstep_t microstep);
-
-
-/**
  * @brief Set motor speed directly in RPM
- * @param rpm Speed in revolutions per minute (0-1200)
+ * @param rpm Speed in revolutions per minute (clamped to STEPPER_MAX_SPEED_RPM)
  */
 void Stepper_SetSpeedRPM(uint16_t rpm);
 
@@ -171,28 +159,9 @@ void Stepper_SetSpeedRPM(uint16_t rpm);
 uint16_t Stepper_GetSpeedRPM(void);
 
 /**
- * @brief Run specified number of steps
- * @param steps Number of steps to run
- * @retval true if command accepted
- */
-bool Stepper_RunSteps(uint32_t steps);
-
-/**
- * @brief Move to absolute position
- * @param position Target position in steps
- * @retval true if command accepted
- */
-bool Stepper_MoveToPosition(int32_t position);
-
-/**
  * @brief Start continuous movement (jog mode)
  */
 void Stepper_StartJog(void);
-
-/**
- * @brief Reset position counter to zero
- */
-void Stepper_ResetPosition(void);
 
 /**
  * @brief Get current position
@@ -243,45 +212,10 @@ void Stepper_ProcessTimerUpdate(void);
 void Stepper_NotifyDriverFault(void);
 
 /**
- * @brief Set PWM duty cycle
- * @param duty_percent Duty cycle percentage (0-100)
- */
-void Stepper_SetDutyCycle(uint32_t duty_percent);
-
-/**
- * @brief Get current PWM control parameters
- * @param control Pointer to PWM control structure to fill
- */
-void Stepper_GetPWMControl(PWM_Control_t *control);
-
-void Stepper_DiagnosticCheck(void);
-
-/**
- * @brief Post-shutdown diagnostic for Stepper_StopPWM()
- * @note Output gated by DBG_BLOCK(TIMER). Call after Stepper_Stop() to
- *       verify TIM1 registers reached safe state. Always compiled;
- *       prints nothing when DBG_TIMER_ENABLE == 0.
- */
-void Stepper_StopPWM_Diagnostic(void);
-
-/**
- * @brief Get step rate measurements for diagnostics
- * @param measured Pointer to store measured steps per second
- * @return true if valid measurement available
- */
-bool Stepper_GetStepRate(uint32_t *measured, uint32_t *expected);
-
-/**
  * @brief Print step rate diagnostics to UART
  * @note Call periodically when motor is running to see measured vs expected rate
  */
 void Stepper_PrintStepRateDiagnostics(void);
-
-/**
- * @brief Reset step rate measurement counters
- * @note Call when starting a new measurement
- */
-void Stepper_ResetStepRateMeasurement(void);
 
 /**
  * @brief Check IDLE state integrity (diagnostic function)
@@ -304,12 +238,6 @@ void Stepper_SuppressIdleInterrupts(void);
  * @note Replaces direct TIM1->BDTR access from motor_control.c.
  */
 void Stepper_SetOutputProtection(bool idle);
-
-/**
- * @brief Check if TIM1 Update Interrupt is enabled (diagnostic)
- * @retval true if UIE bit is set in TIM1->DIER
- */
-bool Stepper_IsTimerInterruptEnabled(void);
 
 /**
  * @brief Get current TIM1 Auto-Reload Register value

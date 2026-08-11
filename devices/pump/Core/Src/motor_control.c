@@ -48,10 +48,8 @@ extern TIM_HandleTypeDef htim4;  // Green LED - TIM4 CH1
 // FlowCorrectionFactor (OD 0x2200), not baked in here.
 #define BASE_STEPS_PER_ML       1440.0f
 
-
-// Safety limits (tested 01/20/2026)
-#define MAX_SAFE_RPM            180      // Maximum safe RPM from testing
-#define MAX_FLOW_ML_MIN         180     // Maximum flow rate: 100 ml/min @ 90 RPM
+// Speed ceiling is enforced by mlPerMin_to_rpm() clamping to
+// STEPPER_MAX_SPEED_RPM (stepper.h) — no separate limit here.
 
 // CiA 402 ControlWord bits (0x6040) - DS402 Standard Mapping
 #define CONTROLWORD_SWITCH_ON       (1 << 0)  // Bit 0: Switch On (enable power stage)

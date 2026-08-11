@@ -562,20 +562,6 @@ const TMC2209_Diag_t* TMC2209_GetDiagnostics(void) {
 /*  Public API — Runtime Diagnostics                                          */
 /* -------------------------------------------------------------------------- */
 
-TMC2209_Status_t TMC2209_ReadStallGuard(uint16_t *sg_result) {
-	if (sg_result == NULL || !tmc2209_initialized) {
-		return TMC2209_ERR_NOT_INIT;
-	}
-
-	uint32_t raw;
-	TMC2209_Status_t status = TMC2209_ReadRegister(TMC2209_SG_RESULT, &raw);
-
-	if (status == TMC2209_OK) {
-		*sg_result = (uint16_t) (raw & 0x03FF);
-	}
-	return status;
-}
-
 TMC2209_Status_t TMC2209_ReadDrvStatus(uint32_t *status) {
 	if (status == NULL || !tmc2209_initialized) {
 		return TMC2209_ERR_NOT_INIT;

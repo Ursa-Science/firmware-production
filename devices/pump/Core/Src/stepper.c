@@ -21,14 +21,9 @@ typedef struct {
 	Stepper_Microstep_t microstep;
 	uint16_t speed_rpm;           // Direct RPM control
 	int32_t current_position;
-	uint32_t steps_remaining;
 	uint32_t current_arr;
 	uint32_t target_arr;
-	uint32_t accel_counter;
-	uint32_t step_counter;
 	bool enabled;
-	bool continuous_mode;
-	uint32_t timeout_start;
 
 	PWM_Control_t pwm_control;
 
@@ -57,11 +52,8 @@ typedef struct {
 #define STEPS_PER_SEC(rpm, microstep)  ((rpm * STEPPER_STEPS_PER_REV * microstep) / 60)
 #define TIMER_ARR(rpm, microstep)      ((TIMER_FREQ_HZ / STEPS_PER_SEC(rpm, microstep)) - 1)
 
-// Speed presets (in RPM)
-#define SPEED_SLOW_RPM      1
+// Default speed at init before the master sets a flow rate (in RPM)
 #define SPEED_NORMAL_RPM    30
-#define SPEED_FAST_RPM      100
-#define SPEED_MAX_RPM       180
 
 // AVR446 CONSTANT ACCELERATION PARAMETERS (Fix 15 — replaces proportional ramp)
 // Previous proportional ramp (current_arr / DIVISOR) produced constant % speed change,
@@ -98,7 +90,7 @@ static volatile uint32_t stepper_pending_events = 0; // ISR-written event bitfie
 
 // Step rate measurement for diagnostics
 // VOLATILE: Written by TIM1 ISR (Stepper_ProcessTimerUpdate), read by main loop
-// (Stepper_GetStepRate, Stepper_PrintStepRateDiagnostics)
+// (Stepper_PrintStepRateDiagnostics)
 static volatile uint32_t step_rate_counter = 0; // Counts steps in current measurement window
 static volatile uint32_t step_rate_start_time = 0; // Start time of measurement window
 static volatile uint32_t measured_steps_per_sec = 0; // Measured step rate
@@ -159,11 +151,7 @@ bool Stepper_Init(void) {
 	stepper.microstep = MICROSTEP_8; // TMC2209: CHOPCONF.MRES=5 (1/8 µstep) via UART write, INTPOL=1 (256 internal interpolation)
 	stepper.speed_rpm = SPEED_NORMAL_RPM;
 	stepper.current_position = 0;
-	stepper.steps_remaining = 0;
 	stepper.enabled = false;
-	stepper.continuous_mode = false;
-	stepper.accel_counter = 0;
-	stepper.step_counter = 0;
 	stepper.accel_step_n = 0;
 	stepper.accel_remainder = 0;
 
@@ -237,8 +225,6 @@ void Stepper_Disable(void) {
 	// Stop any ongoing movement
 	Stepper_StopPWM();
 	stepper.state = STEPPER_IDLE;
-	stepper.steps_remaining = 0;
-	stepper.continuous_mode = false;
 
 	// Disable driver
 	HAL_GPIO_WritePin(STEPPER_ENABLE_PORT, STEPPER_ENABLE_PIN, GPIO_PIN_SET); // Active low
@@ -261,8 +247,8 @@ void Stepper_Stop(void) {
 	if (stepper.state == STEPPER_IDLE && !Stepper_IsMoving())
 		return;
 
-	DBG_PRINT(STEPPER, "Stop called - state=%d, continuous=%d, enabled=%d",
-			stepper.state, stepper.continuous_mode, stepper.enabled);
+	DBG_PRINT(STEPPER, "Stop called - state=%d, enabled=%d",
+			stepper.state, stepper.enabled);
 	DBG_HW(STEPPER, "BEFORE: TIM1 CR1=0x%04lX, DIER=0x%04lX, CCER=0x%04lX",
            TIM1->CR1, TIM1->DIER, TIM1->CCER);
 
@@ -274,10 +260,6 @@ void Stepper_Stop(void) {
 
 	// 2. Clear movement state
 	stepper.state = STEPPER_IDLE;
-	stepper.steps_remaining = 0;
-	stepper.continuous_mode = false;
-	stepper.accel_counter = 0;
-	stepper.step_counter = 0;
 
 	DBG_PRINT_V(STEPPER, "State cleared to IDLE");
 
@@ -330,7 +312,6 @@ void Stepper_NormalStop(void) {
 		// Signal main loop to complete full shutdown sequence
 		stepper.stop_pending = true;
 		stepper.state = STEPPER_IDLE;
-		stepper.continuous_mode = false;
 
 		// Notify motor_control that motor has stopped (polled via Stepper_GetPendingEvents)
 		stepper_pending_events |= STEPPER_EVT_STOPPED;
@@ -343,7 +324,6 @@ void Stepper_NormalStop(void) {
 
 	// Enter deceleration state
 	stepper.state = STEPPER_DECELERATING;
-	stepper.continuous_mode = false;  // Ensure we stop after deceleration
 	// AVR446: Scale step counter for deceleration rate difference
 	stepper.accel_step_n = stepper.accel_step_n * ACCEL_RATE_RPM_PER_SEC
 			/ DECEL_RATE_RPM_PER_SEC;
@@ -362,39 +342,6 @@ void Stepper_SetDirection(Stepper_Direction_t direction) {
 	// (inverted from A4988 due to internal motor phase routing difference)
 	HAL_GPIO_WritePin(STEPPER_DIR_PORT, STEPPER_DIR_PIN,
 			direction == STEPPER_DIR_CW ? GPIO_PIN_RESET : GPIO_PIN_SET);
-}
-
-/**
- * @brief Set microstep resolution
- */
-bool Stepper_SetMicrostep(Stepper_Microstep_t microstep) {
-	if (!initialized)
-		return false;
-
-	// Validate microstep value
-	// TMC2209: MICROSTEP_1/2 via UART CHOPCONF, others via MS1/MS2 pins
-	if (microstep != MICROSTEP_1 && microstep != MICROSTEP_2
-			&& microstep != MICROSTEP_8 && microstep != MICROSTEP_16
-			&& microstep != MICROSTEP_32 && microstep != MICROSTEP_64) {
-		return false;
-	}
-
-	stepper.microstep = microstep;
-	Stepper_ConfigureMicrostepPins(microstep);
-
-	// Update timer speed for new microstep setting
-	if (stepper.speed_rpm > 0) {
-		uint32_t arr = TIMER_ARR(stepper.speed_rpm, stepper.microstep);
-		if (stepper.state == STEPPER_RUNNING) {
-			stepper.target_arr = arr;
-		} else {
-			stepper.current_arr = arr;
-			stepper.target_arr = arr;
-			stepper.pwm_control.arr_value = arr;
-		}
-	}
-
-	return true;
 }
 
 /**
@@ -437,60 +384,6 @@ uint16_t Stepper_GetSpeedRPM(void) {
 }
 
 /**
- * @brief Run specified number of steps
- */
-bool Stepper_RunSteps(uint32_t steps) {
-	if (!initialized || !stepper.enabled || stepper.state != STEPPER_IDLE) {
-		return false;
-	}
-
-	if (steps == 0) {
-		return true;
-	}
-
-	// Set up movement with acceleration
-	stepper.steps_remaining = steps;
-	stepper.continuous_mode = false;
-	stepper.state = STEPPER_RUNNING;
-	stepper.timeout_start = HAL_GetTick();
-	stepper.accel_counter = 0;
-	stepper.step_counter = 0;
-
-	// Configure acceleration profile (ARR calculation + low-speed bypass logic)
-	Stepper_ConfigureAcceleration();
-	Stepper_UpdatePWM();
-
-	// Start PWM
-	Stepper_StartPWM();
-
-	return true;
-}
-
-/**
- * @brief Move to absolute position
- */
-bool Stepper_MoveToPosition(int32_t position) {
-	if (!initialized || !stepper.enabled || stepper.state != STEPPER_IDLE) {
-		return false;
-	}
-
-	int32_t delta = position - stepper.current_position;
-	if (delta == 0) {
-		return true;
-	}
-
-	// Set direction based on delta
-	if (delta > 0) {
-		Stepper_SetDirection(STEPPER_DIR_CW);
-	} else {
-		Stepper_SetDirection(STEPPER_DIR_CCW);
-		delta = -delta;
-	}
-
-	return Stepper_RunSteps((uint32_t) delta);
-}
-
-/**
  * @brief Start continuous movement (jog mode)
  */
 void Stepper_StartJog(void) {
@@ -516,11 +409,7 @@ void Stepper_StartJog(void) {
 		Stepper_Enable();
 	}
 
-	stepper.continuous_mode = true;
 	stepper.state = STEPPER_RUNNING;
-	stepper.timeout_start = HAL_GetTick();
-	stepper.accel_counter = 0;
-	stepper.step_counter = 0;
 
 	// Configure acceleration profile (ARR calculation + low-speed bypass logic)
 	Stepper_ConfigureAcceleration();
@@ -530,15 +419,6 @@ void Stepper_StartJog(void) {
 
 	DBG_PRINT(STEPPER, "StartJog started - target_arr=%lu, speed=%u RPM",
 			stepper.target_arr, Stepper_GetSpeedRPM());
-}
-
-/**
- * @brief Reset position counter to zero
- */
-void Stepper_ResetPosition(void) {
-	if (!initialized)
-		return;
-	stepper.current_position = 0;
 }
 
 /**
@@ -559,7 +439,6 @@ void Stepper_GetStatus(Stepper_Status_t *status) {
 	status->direction = stepper.direction;
 	status->microstep = stepper.microstep;
 	status->current_position = stepper.current_position;
-	status->target_steps = stepper.steps_remaining;
 	status->enabled = stepper.enabled;
 	status->error = (stepper.state == STEPPER_ERROR);
 }
@@ -594,8 +473,7 @@ void Stepper_ProcessTimerUpdate(void) {
 		return;
 	}
 
-	// Step counter for position tracking (every PWM pulse = 1 step in full-step mode)
-	stepper.step_counter++;
+	// Step rate counter for main-loop diagnostics (every PWM pulse = 1 microstep)
 	step_rate_counter++;
 
 	// Compute what the next position (±1)
@@ -706,63 +584,9 @@ void Stepper_ProcessTimerUpdate(void) {
 		__HAL_TIM_SET_AUTORELOAD(&htim1, stepper.current_arr);
 		stepper.pwm_control.arr_value = stepper.current_arr;
 		Stepper_UpdatePWM();
-
-	// Non-continuous mode: decrement remaining steps
-		// Hybrid deferred stop — immediate PWM kill in ISR, full shutdown in main loop.
-	// Previous code called Stepper_Stop() → Stepper_StopPWM() (50-100+ µs nuclear shutdown)
-	// which blocked FDCAN, USART2, and SysTick interrupts.
-	if (!stepper.continuous_mode) {
-		if (stepper.steps_remaining > 0) {
-			stepper.steps_remaining--;
-			if (stepper.steps_remaining == 0) {
-				HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1); // Phase 1: immediate PWM kill
-				stepper.phase1_timestamp = HAL_GetTick();
-				stepper.stop_pending = true; // Phase 2: main loop does full shutdown
-				stepper.state = STEPPER_IDLE;
-					// Notify motor_control that motor has stopped (polled via Stepper_GetPendingEvents)
-				stepper_pending_events |= STEPPER_EVT_STOPPED;
-				return;
-			}
-		}
 	}
-	// continuous/jog mode simply runs until stopped elsewhere
-	}
+	// Jog mode runs until stopped elsewhere (NormalStop / Stop / fault)
 }
-
-/* Phase 1 - PWM Control Functions */
-
-/**
- * @brief Set PWM duty cycle
- */
-void Stepper_SetDutyCycle(uint32_t duty_percent) {
-	if (!initialized)
-		return;
-
-	// Clamp duty cycle to valid range
-	if (duty_percent < PWM_DUTY_MIN)
-		duty_percent = PWM_DUTY_MIN;
-	if (duty_percent > PWM_DUTY_MAX)
-		duty_percent = PWM_DUTY_MAX;
-
-	stepper.pwm_control.duty_percent = duty_percent;
-
-	// Update timer compare value
-	uint32_t arr = __HAL_TIM_GET_AUTORELOAD(&htim1);
-	uint32_t ccr = (arr * duty_percent) / 100;
-	__HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, ccr);
-}
-
-/**
- * @brief Get current PWM control parameters
- */
-void Stepper_GetPWMControl(PWM_Control_t *control) {
-	if (!control || !initialized)
-		return;
-
-	control->arr_value = stepper.pwm_control.arr_value;
-	control->duty_percent = stepper.pwm_control.duty_percent;
-}
-
 
 /* Private functions ---------------------------------------------------------*/
 
@@ -944,46 +768,6 @@ static void Stepper_StopPWM(void) {
 }
 
 /**
- * @brief Post-shutdown diagnostic dump for Stepper_StopPWM()
- * @note  Gated by DBG_TIMER_ENABLE.
- *        Call from main-loop context after StopPWM if register-level verification needed.
- */
-void Stepper_StopPWM_Diagnostic(void) {
-	DBG_BLOCK(TIMER) {
-		DBG_PRINT(TIMER, "=== STOP_PWM DIAGNOSTIC ===");
-		DBG_PRINT(TIMER, "  SR=0x%04lX, CNT=%lu, DIER=0x%04lX, BDTR=0x%04lX",
-				TIM1->SR, TIM1->CNT, TIM1->DIER, TIM1->BDTR);
-		DBG_PRINT(TIMER, "  CR1=0x%04lX, CCER=0x%04lX", TIM1->CR1, TIM1->CCER);
-		DBG_PRINT(TIMER, "  NVIC_EN=%lu, NVIC_PEND=%lu",
-				NVIC_GetEnableIRQ(TIM1_UP_TIM16_IRQn),
-				NVIC_GetPendingIRQ(TIM1_UP_TIM16_IRQn));
-
-		// PA8 GPIO mode check (bits [17:16] of MODER for pin 8)
-		uint32_t gpio_mode = (GPIOA->MODER >> (8 * 2)) & 0x03;
-		DBG_PRINT(TIMER, "  PA8_mode=%lu (expect 1=GPIO output)", gpio_mode);
-
-		// Verify critical post-shutdown invariants
-		if (TIM1->DIER != 0x0000) {
-			DBG_ERROR(TIMER, "VERIFICATION FAILED: DIER=0x%04lX (expect 0)",
-					TIM1->DIER);
-		}
-		if (TIM1->CR1 & TIM_CR1_CEN) {
-			DBG_ERROR(TIMER,
-					"VERIFICATION FAILED: Timer still enabled (CEN=1)");
-		}
-		if (!(TIM1->BDTR & TIM_BDTR_OSSI)) {
-			DBG_ERROR(TIMER, "VERIFICATION FAILED: OSSI not set");
-		}
-		if (TIM1->CCER & TIM_CCER_CC1E) {
-			DBG_ERROR(TIMER,
-					"VERIFICATION FAILED: PWM output still enabled (CC1E=1)");
-		}
-		DBG_PRINT(TIMER, "=== END STOP_PWM DIAGNOSTIC ===");
-	}
-}
-
-
-/**
  * @brief Update PWM parameters based on current state
  */
 static void Stepper_UpdatePWM(void) {
@@ -1108,11 +892,6 @@ void Stepper_Poll(void) {
 		// GPIO safety/verification, counter reset
 		Stepper_StopPWM();
 
-		// Complete state cleanup
-		stepper.steps_remaining = 0;
-		stepper.accel_counter = 0;
-		stepper.step_counter = 0;
-
 		// One-shot post-stop verification ("set once, verify once")
 		// Catches any deferred-stop-sequence failure immediately
 		Stepper_SuppressIdleInterrupts();
@@ -1123,23 +902,6 @@ void Stepper_Poll(void) {
 		DBG_PRINT(STEPPER,
 				"Hybrid deferred stop completed - full shutdown done");
 	}
-}
-
-/**
- * @brief Get step rate diagnostics
- * @param measured Pointer to store measured steps per second
- * @param expected Pointer to store expected steps per second
- * @return true if valid measurement available
- */
-bool Stepper_GetStepRate(uint32_t *measured, uint32_t *expected) {
-	if (!measured || !expected)
-		return false;
-
-	*measured = measured_steps_per_sec;
-	*expected = expected_steps_per_sec;
-
-	// Return true if we have valid measurements (non-zero)
-	return (measured_steps_per_sec > 0 || expected_steps_per_sec > 0);
 }
 
 /**
@@ -1208,130 +970,6 @@ void Stepper_PrintStepRateDiagnostics(void) {
 		DBG_PRINT(STEPPER, "=== END STEP RATE DIAGNOSTICS ===");
 		DBG_PRINT(STEPPER, "");
 	}
-}
-
-/**
- * @brief Reset step rate measurement counters
- * @note Call when starting a new measurement
- */
-void Stepper_ResetStepRateMeasurement(void) {
-	step_rate_counter = 0;
-	step_rate_start_time = 0;
-	measured_steps_per_sec = 0;
-	expected_steps_per_sec = 0;
-}
-
-/**
- * @brief Check timer and GPIO configuration
-	 * @note Entire body guarded by #if DEBUG_MASTER_ENABLE so the function
- */
-void Stepper_DiagnosticCheck(void) {
-#if DEBUG_MASTER_ENABLE
-	DBG_BLOCK(STEPPER) {
-		DBG_PRINT(STEPPER, "");
-		DBG_PRINT(STEPPER, "=== STEPPER DIAGNOSTIC CHECK ===");
-
-		// Check GPIO states
-		DBG_PRINT(STEPPER, "GPIO States:");
-		DBG_PRINT(STEPPER, "  ENABLE: %s (should be LOW when enabled)",
-				HAL_GPIO_ReadPin(STEPPER_ENABLE_PORT, STEPPER_ENABLE_PIN) ? "HIGH" : "LOW");
-		DBG_PRINT(STEPPER, "  DIR: %s",
-				HAL_GPIO_ReadPin(STEPPER_DIR_PORT, STEPPER_DIR_PIN) ? "HIGH" : "LOW");
-		DBG_PRINT(STEPPER, "  STEP: %s",
-				HAL_GPIO_ReadPin(STEPPER_STEP_PORT, STEPPER_STEP_PIN) ? "HIGH" : "LOW");
-		DBG_PRINT(STEPPER, "  MS1: %s",
-				HAL_GPIO_ReadPin(STEPPER_MS1_PORT, STEPPER_MS1_PIN) ? "HIGH" : "LOW");
-		DBG_PRINT(STEPPER, "  MS2: %s",
-				HAL_GPIO_ReadPin(STEPPER_MS2_PORT, STEPPER_MS2_PIN) ? "HIGH" : "LOW");
-		DBG_PRINT(STEPPER, "  DIAG: %s",
-				HAL_GPIO_ReadPin(TMC_DIAG_GPIO_Port, TMC_DIAG_Pin) ?
-						"HIGH (driver FAULT latched)" : "LOW (ok)");
-
-		// Check timer configuration
-		DBG_PRINT(STEPPER, "");
-		DBG_PRINT(STEPPER, "Timer Configuration:");
-		DBG_PRINT(STEPPER, "  TIM1 CR1: 0x%04lX", TIM1->CR1);
-		DBG_PRINT(STEPPER, "  TIM1 PSC: %lu", TIM1->PSC);
-		DBG_PRINT(STEPPER, "  TIM1 ARR: %lu", TIM1->ARR);
-		DBG_PRINT(STEPPER, "  TIM1 CCR1: %lu", TIM1->CCR1);
-		DBG_PRINT(STEPPER, "  TIM1 CCMR1: 0x%04lX", TIM1->CCMR1);
-		DBG_PRINT(STEPPER, "  TIM1 CCER: 0x%04lX", TIM1->CCER);
-		DBG_PRINT(STEPPER, "  TIM1 CNT: %lu", TIM1->CNT);
-		DBG_PRINT(STEPPER, "  TIM1 DIER: 0x%04lX", TIM1->DIER);
-
-		// Check if timer is running
-		if (TIM1->CR1 & TIM_CR1_CEN) {
-			DBG_PRINT(STEPPER, "  Timer is RUNNING");
-		} else {
-			DBG_PRINT(STEPPER, "  Timer is STOPPED");
-		}
-
-		// Check if PWM output is enabled
-		if (TIM1->CCER & TIM_CCER_CC1E) {
-			DBG_PRINT(STEPPER, "  PWM Channel 1 is ENABLED");
-		} else {
-			DBG_PRINT(STEPPER, "  PWM Channel 1 is DISABLED");
-		}
-
-		// PWM control status
-		DBG_PRINT(STEPPER, "");
-		DBG_PRINT(STEPPER, "PWM Control Status:");
-		DBG_PRINT(STEPPER, "  Duty Cycle: %lu%%",
-				stepper.pwm_control.duty_percent);
-		DBG_PRINT(STEPPER, "  ARR Value: %lu", stepper.pwm_control.arr_value);
-
-		// Check GPIO mode for step pin
-		DBG_PRINT(STEPPER, "");
-		DBG_PRINT(STEPPER, "Step Pin Configuration:");
-		uint32_t step_pin_pos = 0;
-		uint32_t step_pin_mask = STEPPER_STEP_PIN;
-		while (step_pin_mask >>= 1)
-			step_pin_pos++;
-
-		uint32_t moder = STEPPER_STEP_PORT->MODER;
-		uint32_t mode = (moder >> (step_pin_pos * 2)) & 0x03;
-
-		const char *mode_str;
-		switch (mode) {
-		case 0:
-			mode_str = "INPUT";
-			break;
-		case 1:
-			mode_str = "OUTPUT";
-			break;
-		case 2:
-			mode_str = "ALTERNATE FUNCTION";
-			break;
-		case 3:
-			mode_str = "ANALOG";
-			break;
-		default:
-			mode_str = "UNKNOWN";
-			break;
-		}
-		DBG_PRINT(STEPPER, "  GPIO Mode: %s", mode_str);
-
-		if (mode == 2) {
-			// Check alternate function
-			uint32_t afr_reg = (step_pin_pos < 8) ?
-			STEPPER_STEP_PORT->AFR[0] :
-													STEPPER_STEP_PORT->AFR[1];
-			uint32_t afr_pos =
-					(step_pin_pos < 8) ? step_pin_pos : (step_pin_pos - 8);
-			uint32_t af = (afr_reg >> (afr_pos * 4)) & 0x0F;
-			DBG_PRINT(STEPPER, "  Alternate Function: AF%lu", af);
-		}
-
-		DBG_PRINT(STEPPER, "");
-		DBG_PRINT(STEPPER, "Interrupt Status:");
-		DBG_PRINT(STEPPER, "  TIM1_UP_TIM16_IRQn enabled: %s",
-				NVIC_GetEnableIRQ(TIM1_UP_TIM16_IRQn) ? "YES" : "NO");
-		DBG_PRINT(STEPPER, "  TIM1 Update interrupt enabled: %s",
-				(TIM1->DIER & TIM_DIER_UIE) ? "YES" : "NO");
-		DBG_PRINT(STEPPER, "=== END DIAGNOSTIC CHECK ===");
-		DBG_PRINT(STEPPER, "");
-	}
-#endif /* DEBUG_MASTER_ENABLE */
 }
 
 /**
@@ -1441,14 +1079,6 @@ void Stepper_SetOutputProtection(bool idle) {
 		TIM1->BDTR |= TIM_BDTR_AOE;
 		DBG_HW(TIMER, "Output protection OFF (AOE enabled for RUNNING)");
 	}
-}
-
-/**
- * @brief Check if TIM1 Update Interrupt is enabled (diagnostic)
- * @retval true if UIE bit is set in TIM1->DIER
- */
-bool Stepper_IsTimerInterruptEnabled(void) {
-	return (TIM1->DIER & 0x0001) != 0;
 }
 
 uint32_t Stepper_GetTimerARR(void) {
