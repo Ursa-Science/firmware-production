@@ -170,7 +170,8 @@ TWO before done.
   by construction); MS1/MS2 are permanently UART-address pins; Stepper_Microstep_t
   enum + pin-mapping switch deleted; stale IRUN=22 comments fixed (landed 18).
   To retune resolution: change TMC_MICROSTEP, rebuild, re-run catch test.
-  `1112e73` NOT yet HW-retested (behavior-identical at default by construction).
+  `1112e73` HW-VALIDATED 2026-08-11 (bench log: ARRs and flow→RPM mappings
+  bit-identical to pre-refactor; real AVR446 decel ramp exercised and clean).
   Remaining item (4), optional dedup refactors: TMC read/ReadDiag paths,
   hybrid-stop sequence (4 copies), dose complete/timeout blocks,
   pwm_control.arr_value mirror.
