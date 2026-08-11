@@ -96,7 +96,7 @@ static struct {
 	bool ph_initialized;
 	uint8_t last_cal_command; /**< Track cal command to detect SDO writes */
 
-	/* Phase 4: CiA 404 state machine */
+	/* CiA 404 state machine */
 	uint32_t warmup_start_ms; /**< Timestamp when WARMING_UP entered */
 	uint16_t last_control_word; /**< For rising-edge detection */
 	uint16_t last_status_word; /**< For delta trigger comparison */

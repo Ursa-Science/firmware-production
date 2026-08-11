@@ -778,7 +778,7 @@ void MCOHW_CAN_MspDeInit(FDCAN_HandleTypeDef *hfdcan)
 }
 
 
-/* NOTE: HAL_TIM_PeriodElapsedCallback moved to stm32g4xx_it.c (Phase 2 refactor)
+/* NOTE: HAL_TIM_PeriodElapsedCallback lives in stm32g4xx_it.c
  * to decouple this CAN hardware driver from stepper.h.
  * The callback routes both the MCO stack timer (TIM7 → MCOHW_TimerTick)
  * and the stepper timer (TIM1 → Stepper_ProcessTimerUpdate).
@@ -933,7 +933,7 @@ void HAL_FDCAN_ErrorStatusCallback(FDCAN_HandleTypeDef *CanHandle, uint32_t Erro
 #if USE_LEDS
         CONFIG_USED.LEDErr = LED_ON;
 #endif
-				// Audit 5 Fix 4: Bus-off recovery — restart FDCAN protocol engine
+				// Bus-off recovery — restart FDCAN protocol engine
 				// ISO 11898-1: controller must see 128×11 recessive bits before rejoining.
 				// HAL_FDCAN_Stop + HAL_FDCAN_Start resets the protocol engine and allows
 				// the automatic recovery sequence to begin. Without this, bus-off is

@@ -191,10 +191,10 @@ static void MotorControl_PrintStatus(void);
 static void MotorControl_PrintTimerStats(void);
 static void MotorControl_PrintDiagnostics(void);
 
-/* Phase 3: Stepper Event Handling (CT-03) -----------------------------------*/
+/* Stepper event handling ----------------------------------------------------*/
 
 /**
- * @brief Process stepper events in main loop context (CT-03)
+ * @brief Process stepper events in main loop context
  * @note  Called from MotorControl_Process() each cycle.
  *        Reads-and-clears event bitfield atomically via Stepper_GetPendingEvents().
  */
@@ -289,7 +289,7 @@ bool MotorControl_Init(void) {
 		return false;
 	}
 
-	// Initialize LED control (inject timer handles — TC-03 decoupling)
+	// Initialize LED control (timer handles injected to keep the module decoupled)
 	if (!LEDControl_Init(&htim2, TIM_CHANNEL_1, &htim3, TIM_CHANNEL_2, &htim4,
 			TIM_CHANNEL_1)) {
 		return false;
@@ -402,10 +402,8 @@ bool MotorControl_IsOperational(void) {
  */
 void MotorControl_EmergencyStop(void) {
 	if (motor_ctrl.initialized) {
-		// Audit 5 Fix 3: Only call Stepper_Stop/Disable if motor is actually moving
-		// or state indicates RUNNING. Prevents repeated heavy shutdown when called
-		// from MCO error/heartbeat-lost events while motor is already stopped.
-		// Stepper_Stop() IDLE guard (Fix 1) provides additional safety net.
+		// Stop/disable only if actually moving — MCO error/heartbeat-lost events
+		// fire repeatedly and the heavy shutdown would repeat while already stopped.
 		if (Stepper_IsMoving()
 				|| motor_ctrl.current_state == MOTOR_STATE_RUNNING) {
 			Stepper_Stop();
@@ -424,9 +422,8 @@ void MotorControl_EmergencyStop(void) {
  */
 void MotorControl_Reset(void) {
 	if (motor_ctrl.initialized) {
-		// Audit 5 Fix 2: Only call Stepper_Stop/Disable when not already DISABLED
-		// Prevents repeated heavy shutdown when called from MCO NMT_CHANGE events
-		// while motor is already stopped. State/variable resets below still execute.
+		// Stop/disable only when not already DISABLED — MCO NMT_CHANGE events fire
+		// repeatedly. The state/variable resets below still execute either way.
 		if (motor_ctrl.current_state != MOTOR_STATE_DISABLED) {
 			Stepper_Stop();
 			Stepper_Disable(); // De-energize coils on NMT reset (EN pin HIGH)

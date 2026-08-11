@@ -114,8 +114,8 @@ static uint8_t TMC2209_CRC8(const uint8_t *data, uint8_t len) {
  * RX at all — echo bytes are left in RDR / cause ORE, which the caller
  * must clean up via USART2_CleanupDirect() after this returns.
  *
- * Use this for write-only TMC2209 operations (Phase 1) where we don't
- * care about the echo path and just need the datagram on the wire.
+ * Use this for write-only TMC2209 operations where we don't care about
+ * the echo path and just need the datagram on the wire.
  *
  * Does NOT touch the HAL handle (huart2) — direct register access only.
  *
@@ -843,7 +843,7 @@ static void TMC2209_WriteBlindFallback(uint32_t brr_base, uint32_t gconf_val,
  * HAL_UART_* calls, huart2 is never modified. Call BEFORE Log_Init(); after
  * init, USART2 continues as the debug UART with no state corruption.
  *
- * SEQUENCE (Phase 1, 2026-08-05 — verified-write rework):
+ * SEQUENCE (verified-write rework, 2026-08-05):
  *   1. 100 ms power-up settle (charge pump + internal oscillator).
  *   2. For each baud in {debug (115200), debug/12 (~9600)}:
  *        a. Push-pull auto-baud training preamble, then back to open-drain.

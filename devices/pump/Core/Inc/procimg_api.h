@@ -102,7 +102,7 @@ static inline float ProcImg_GetFlowCorrectionFactor(void) {
 	return val;
 }
 
-/* ---- LED CONTROL (TC-04) ------------------------------------------------ */
+/* ---- LED CONTROL -------------------------------------------------------- */
 
 /** @brief Read LEDControl [0x2000] — uint8_t */
 static inline uint8_t ProcImg_GetLEDControl(void) {

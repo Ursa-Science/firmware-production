@@ -36,9 +36,9 @@ typedef struct {
 	uint32_t accel_step_n; // Step number in acceleration sequence (n in c_n formula)
 	int32_t accel_remainder;  // Carried integer division remainder for accuracy
 
-	// Timing measurements for hybrid deferred stop
-	uint32_t phase1_timestamp;   // When ISR executed Phase 1 (HAL_TIM_PWM_Stop)
-	uint32_t phase2_timestamp; // When main loop executed Phase 2 (Stepper_StopPWM)
+	// Deferred-stop timing: ISR PWM-kill time vs. main-loop completion time
+	uint32_t phase1_timestamp;
+	uint32_t phase2_timestamp;
 } Stepper_Control_t;
 
 /* Private define ------------------------------------------------------------*/
@@ -55,12 +55,10 @@ typedef struct {
 // Default speed at init before the master sets a flow rate (in RPM)
 #define SPEED_NORMAL_RPM    30
 
-// AVR446 CONSTANT ACCELERATION PARAMETERS (Fix 15 — replaces proportional ramp)
-// Previous proportional ramp (current_arr / DIVISOR) produced constant % speed change,
-// meaning absolute RPM jumps INCREASED near target speed → lock-up at 100ml/min.
-// AVR446 algorithm produces true linear velocity ramp: constant RPM/sec at all speeds.
-// Formula: c_n = c_{n-1} - (2 * c_{n-1}) / (4*n + 1), evaluated once per step interrupt.
-// Reference: Atmel/Microchip Application Note AVR446 (doc8017)
+// AVR446 constant-acceleration ramp: linear RPM/sec at all speeds. (A
+// proportional ramp made RPM jumps grow near target speed → lock-up at 100 ml/min.)
+// c_n = c_{n-1} - (2 * c_{n-1}) / (4*n + 1), once per step interrupt.
+// Reference: Atmel app note AVR446 (doc8017)
 #define ACCEL_RATE_RPM_PER_SEC  100  // Acceleration rate in RPM/sec (tunable)
 #define DECEL_RATE_RPM_PER_SEC  80   // Deceleration rate in RPM/sec (gentler than accel)
 
@@ -230,16 +228,15 @@ void Stepper_Disable(void) {
 
 /**
  * @brief Emergency stop - immediate halt
- * @note CRITICAL: Disables PWM/interrupt FIRST to prevent race condition
- *       Timer interrupt must be disabled before any delays/operations
+ * @note Disables PWM/interrupt FIRST — the timer must not keep stepping
+ *       during the rest of the shutdown.
  */
 void Stepper_Stop(void) {
 	if (!initialized)
 		return;
 
-	// Audit 5 Fix 1: IDLE guard — skip full nuclear shutdown when already stopped
-	// Prevents main-loop starvation from repeated StopPWM + UART flood when
-	// MotorControl_Reset/EmergencyStop call Stepper_Stop on every MCO event.
+	// Already stopped — skip. MCO events call Stepper_Stop repeatedly; the full
+	// shutdown + logging every time would starve the main loop.
 	if (stepper.state == STEPPER_IDLE && !Stepper_IsMoving())
 		return;
 
@@ -248,13 +245,10 @@ void Stepper_Stop(void) {
 	DBG_HW(STEPPER, "BEFORE: TIM1 CR1=0x%04lX, DIER=0x%04lX, CCER=0x%04lX",
            TIM1->CR1, TIM1->DIER, TIM1->CCER);
 
-	// 1. STOP PWM/INTERRUPT IMMEDIATELY - prevents race condition
-	//    Timer interrupt was continuing to generate steps during any delays
 	Stepper_StopPWM();
 
 	DBG_PRINT_V(STEPPER, "PWM stopped");
 
-	// 2. Clear movement state
 	stepper.state = STEPPER_IDLE;
 
 	DBG_PRINT_V(STEPPER, "State cleared to IDLE");
@@ -264,8 +258,7 @@ void Stepper_Stop(void) {
 	DBG_PRINT_V(STEPPER, "STEP pin state: %s",
 			HAL_GPIO_ReadPin(STEPPER_STEP_PORT, STEPPER_STEP_PIN) ? "HIGH" : "LOW");
 
-	// One-shot post-stop verification
-	// Catches any stop-sequence failure immediately rather than waiting for periodic audit
+	// One-shot post-stop verification (don't wait for the periodic idle audit)
 	Stepper_SuppressIdleInterrupts();
 	Stepper_SetOutputProtection(true);
 	Stepper_ResetIdleCounters(); // Fresh counters for this idle period
@@ -298,18 +291,11 @@ void Stepper_NormalStop(void) {
 		DBG_PRINT(STEPPER,
 				"Low speed detected (ARR=%lu > %d), using hybrid stop",
 				stepper.current_arr, LOW_SPEED_ARR_THRESHOLD);
-		// HYBRID DEFERRED STOP PATTERN (fixes spurious pulse timing window):
-		// ISR immediately stops PWM OUTPUT (fast, safe, prevents spurious pulses)
-		HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1); // IMMEDIATELY stop PWM output
-
-		// Record timestamp when (PWM stop) executed in ISR
+		// Deferred stop: kill PWM output now; Stepper_Poll() finishes the shutdown
+		HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
 		stepper.phase1_timestamp = HAL_GetTick();
-
-		// Signal main loop to complete full shutdown sequence
 		stepper.stop_pending = true;
 		stepper.state = STEPPER_IDLE;
-
-		// Notify motor_control that motor has stopped (polled via Stepper_GetPendingEvents)
 		stepper_pending_events |= STEPPER_EVT_STOPPED;
 		return;
 	}
@@ -441,8 +427,8 @@ void Stepper_GetStatus(Stepper_Status_t *status) {
 
 /**
  * @brief Check if motor is physically moving
- * @note  hardware register check'
- *        Returns true only when TIM1 counter is enabled AND PWM output is active.
+ * @note  Hardware register check: true only when the TIM1 counter is enabled
+ *        AND PWM output is active.
  */
 bool Stepper_IsMoving(void) {
 	return (TIM1->CR1 & TIM_CR1_CEN) && (TIM1->CCER & TIM_CCER_CC1E);
@@ -472,20 +458,17 @@ void Stepper_ProcessTimerUpdate(void) {
 	// Step rate counter for main-loop diagnostics (every PWM pulse = 1 microstep)
 	step_rate_counter++;
 
-	// Compute what the next position (±1)
+	// Compute the next position (±1)
 	int32_t delta = (stepper.direction == STEPPER_DIR_CW) ? +1 : -1;
 	int32_t next_pos = stepper.current_position + delta;
 
-	// Overflow guard: catch both + and – runaway
-	// Hybrid deferred stop — immediate PWM kill in ISR, full shutdown in main loop.
-	// Previous code called Stepper_Stop() → Stepper_StopPWM() (50-100+ µs nuclear shutdown)
-	// which blocked FDCAN, USART2, and SysTick interrupts.
+	// Position runaway guard. Deferred stop: only the fast PWM kill happens here —
+	// a full shutdown in the ISR would block FDCAN/SysTick for 50-100+ µs.
 	if (labs(next_pos) >= STEPPER_POSITION_LIMIT) {
-		HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1); // Phase 1: immediate PWM kill
+		HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
 		stepper.phase1_timestamp = HAL_GetTick();
-		stepper.stop_pending = true;    // Phase 2: main loop does full shutdown
-		stepper.state = STEPPER_ERROR;             // signal via TPDO
-		// Fire ERROR event (polled via Stepper_GetPendingEvents)
+		stepper.stop_pending = true; // Stepper_Poll() finishes the shutdown
+		stepper.state = STEPPER_ERROR;
 		stepper_pending_events |= STEPPER_EVT_ERROR;
 		return;
 	}
@@ -521,12 +504,12 @@ void Stepper_ProcessTimerUpdate(void) {
 			stepper.pwm_control.arr_value = stepper.current_arr;
 			Stepper_UpdatePWM();
 
-			// CFire AT_SPEED event when acceleration reaches target
+			// Fire AT_SPEED event when acceleration reaches target
 			if (stepper.current_arr == stepper.target_arr) {
 				stepper_pending_events |= STEPPER_EVT_AT_SPEED;
 			}
 		}
-		// else: delta == 0 → remainder accumulating, skip this step (Fix 17)
+		// else: delta == 0 → remainder still accumulating; skip the update this step
 
 	} else if (stepper.state == STEPPER_DECELERATING
 			&& stepper.current_arr < stepper.target_arr) {
@@ -547,7 +530,7 @@ void Stepper_ProcessTimerUpdate(void) {
 			// Apply deceleration step (ARR increases = slower)
 			stepper.current_arr += (uint32_t) delta;
 		}
-		// else: delta == 0 → remainder accumulating, skip this step (Fix 17)
+		// else: delta == 0 → remainder still accumulating; skip the update this step
 
 		// Decrement step counter (mirrors accel ramp in reverse)
 		if (n > 0) {
@@ -559,21 +542,13 @@ void Stepper_ProcessTimerUpdate(void) {
 				|| stepper.accel_step_n == 0) {
 			stepper.current_arr = stepper.target_arr;
 
-			// HYBRID DEFERRED STOP PATTERN (fixes spurious pulse timing window):
-			// 1. ISR immediately stops PWM OUTPUT (fast, safe, prevents spurious pulses)
-			// 2. Main loop completes full timer shutdown (safe, non-ISR context)
-			HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1); // IMMEDIATELY stop PWM output
-
-			// PHASE 1 DIAGNOSTIC: Record timestamp when Phase 1 completes
+			// Deferred stop: kill PWM output now; Stepper_Poll() finishes the shutdown
+			HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
 			stepper.phase1_timestamp = HAL_GetTick();
-
-			// Signal main loop to complete full shutdown sequence
 			stepper.stop_pending = true;
 			stepper.state = STEPPER_IDLE;
-
-			// Notify motor_control that motor has stopped (polled via Stepper_GetPendingEvents)
 			stepper_pending_events |= STEPPER_EVT_STOPPED;
-			return; // Exit early - full shutdown completed by Stepper_Poll()
+			return;
 		}
 
 		// Update timer hardware
@@ -588,13 +563,12 @@ void Stepper_ProcessTimerUpdate(void) {
 
 /**
  * @brief Start PWM generation
-	 * @note NVIC-level interrupt enable added after peripheral enable
- *       to ensure ARM core can deliver timer interrupts
-	 * @note Restores PA8 to TIM1_CH1 AF mode before starting PWM
-	 *       switches to GPIO mode for physical isolation during IDLE)
+ * @note Restores PA8 to TIM1_CH1 AF mode first (StopPWM leaves it in GPIO
+ *       mode for physical isolation). NVIC enable comes AFTER peripheral
+ *       configuration is complete.
  */
 static void Stepper_StartPWM(void) {
-	DBG_PRINT(TIMER, "Phase 3.2: Restoring PA8 to TIM1_CH1 AF mode");
+	DBG_PRINT(TIMER, "Restoring PA8 to TIM1_CH1 AF mode");
 	GPIO_InitTypeDef GPIO_InitStruct = { 0 };
 	GPIO_InitStruct.Pin = STEPPER_STEP_PIN;
 	GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;      // Alternate Function Push-Pull
@@ -612,13 +586,10 @@ static void Stepper_StartPWM(void) {
 	// Start PWM generation on channel 1
 	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 
-		// Enable interrupt at NVIC level (ARM core interrupt controller)
-		// This allows the ARM core to actually deliver TIM1 interrupts
-		// Must be done AFTER peripheral configuration is complete
 	NVIC_EnableIRQ(TIM1_UP_TIM16_IRQn);
 
 	DBG_PRINT(TIMER, "NVIC enabled: TIM1_UP_TIM16_IRQn");
-	DBG_PRINT(TIMER, "Phase 3.2: PA8 reconnected to TIM1_CH1");
+	DBG_PRINT(TIMER, "PA8 reconnected to TIM1_CH1");
 }
 
 /*============================================================================*/
@@ -626,22 +597,11 @@ static void Stepper_StartPWM(void) {
 /*============================================================================*/
 
 /**
- * @brief Configure acceleration profile for motor startup (AVR446 algorithm)
-	 * @note AVR446 constant-acceleration ramp:
- *       Computes c_0 (initial timer period) from desired acceleration rate using
- *       the kinematic formula: c_0 = 0.676 * f * sqrt(2 / alpha)
- *       where alpha = acceleration in steps/sec² and f = timer frequency (Hz).
- *       This is called ONCE at motor start (not in ISR), so sqrt() is safe.
- * 
- * This function handles:
- * 1. Calculate final_arr (target speed) from speed_rpm
- * 2. Set target_arr
- * 3. Apply LOW SPEED BYPASS: At high ARR values (low speeds), skip ramp
- * 4. Compute AVR446 c_0 as starting ARR, clamped to ACCEL_START_ARR_MIN
- * 5. Initialize per-step ramp state (accel_step_n, accel_remainder)
- * 6. Update timer ARR register and pwm_control
- * 
- * @note Caller is responsible for setting duty cycle (CCR) after this function
+ * @brief Configure the AVR446 acceleration profile for motor startup
+ * @note c_0 (initial timer period) = 0.676 * f * sqrt(2 / alpha), where
+ *       alpha = acceleration in steps/s² and f = timer frequency. Called
+ *       ONCE at motor start (not in ISR), so sqrt() is safe.
+ * @note Caller sets the duty cycle (CCR) afterwards.
  */
 static void Stepper_ConfigureAcceleration(void) {
 	// Calculate final ARR value from RPM speed setting
@@ -666,17 +626,11 @@ static void Stepper_ConfigureAcceleration(void) {
 		uint32_t c_0 = (uint32_t) (0.676 * (double) TIMER_FREQ_HZ
 				* sqrt(2.0 / alpha));
 
-			// BIDIRECTIONAL c_0 CLAMP + STEP COUNTER PRE-COMPUTATION
-			// Clamp c_0 DOWN to ACCEL_START_ARR_MIN (2000 → 500 Hz = F-Low per datasheet),
-		// then pre-compute the equivalent step number n so the AVR446 per-step formula
-		// (c_n = c_{n-1} - 2*c_{n-1}/(4n+1)) produces correct deltas from that point.
-		//
-		// Math: From AVR446, c_n ≈ c_0 / sqrt(n+1) for the approximate ramp profile.
-		//   If c_clamped = c_0 / sqrt(n+1), then n = (c_0 / c_clamped)² - 1
-		//   For c_0=13089, c_clamped=2000: n = (13089/2000)² - 1 ≈ 42
-		//
-		// The old Fix 11 clamp (if c_0 < ACCEL_START_ARR_MIN) is preserved for safety,
-		// but will not fire under current parameters since c_0 >> 2000.
+		// Clamp c_0 DOWN to ACCEL_START_ARR_MIN, then pre-compute the equivalent
+		// step number n so the per-step formula produces correct deltas from there.
+		// From AVR446, c_n ≈ c_0 / sqrt(n+1), so n = (c_0 / c_clamped)² - 1.
+		// (The upward clamp below cannot fire under current parameters, c_0 >> 2000;
+		// kept for safety.)
 
 		stepper.accel_remainder = 0;
 
@@ -692,10 +646,10 @@ static void Stepper_ConfigureAcceleration(void) {
 			stepper.accel_step_n = pre_n;
 
 			DBG_PRINT(STEPPER,
-					"Fix16: c_0=%lu clamped to %d, pre-computed n=%lu (skipped resonance zone)",
+					"c_0=%lu clamped to %d, pre-computed n=%lu (skipped resonance zone)",
 					c_0, ACCEL_START_ARR_MIN, pre_n);
 		} else if (c_0 < ACCEL_START_ARR_MIN) {
-			// Fix 11 (preserved): c_0 is too fast — clamp UP to safe pull-in speed
+			// c_0 is too fast — clamp UP to the safe pull-in speed
 			stepper.current_arr = ACCEL_START_ARR_MIN;
 			stepper.accel_step_n = 0;
 		} else {
@@ -774,28 +728,18 @@ static void Stepper_UpdatePWM(void) {
 
 
 /**
- * @brief Poll for deferred stop completion
- * @note Call this from main loop (MotorControl_Process) to complete deferred stop
- *       This implements the HYBRID DEFERRED STOP PATTERN to prevent spurious pulses
- * 
- * HYBRID PATTERN (prevents timing window for spurious pulses):
- * - Phase 1 (ISR): Immediately stops PWM OUTPUT via HAL_TIM_PWM_Stop()
- * - Phase 2 (Main Loop - THIS FUNCTION): Completes full nuclear timer shutdown
- * 
- * Why hybrid approach needed:
- * - Pure deferred stop (ISR sets flag only) left timing window where timer hardware
- *   continued generating PWM pulses until main loop processed flag (several ms)
- * - During this window, spurious pulses reached motor driver causing unwanted movement
- * - Solution: ISR stops PWM output immediately (safe, fast), main loop completes
- *   full shutdown sequence (timer base, interrupts, GPIO safety, etc.)
+ * @brief Complete deferred stops; run step-rate measurement windows
+ * @note Call from the main loop (MotorControl_Process). The ISR stops PWM
+ *       output immediately (a flag-only defer left ms of spurious pulses);
+ *       this function finishes the full shutdown (timer base, interrupts,
+ *       GPIO isolation) from main-loop context.
  */
 void Stepper_Poll(void) {
 	if (!initialized)
 		return;
 
-	// Fix 20: Main-loop step rate measurement (moved from ISR)
-	// ISR only increments step_rate_counter; we do the time-windowed
-	// measurement here using HAL_GetTick() safely from main-loop context.
+	// Step-rate measurement: the ISR only increments step_rate_counter; the
+	// timed window runs here where HAL_GetTick() is safe.
 	if (stepper.state == STEPPER_RUNNING
 			|| stepper.state == STEPPER_DECELERATING) {
 		uint32_t now = HAL_GetTick();
@@ -822,27 +766,21 @@ void Stepper_Poll(void) {
 	if (stepper.stop_pending) {
 		stepper.stop_pending = false;
 
-		// PHASE 2 DIAGNOSTIC: Record timestamp when Phase 2 starts
 		stepper.phase2_timestamp = HAL_GetTick();
-
-		// Log Phase 1 → Phase 2 latency (verbose level - timing measurement)
-		DBG_PRINT_V(STEPPER, "Phase1→Phase2 latency: %lu ms",
+		DBG_PRINT_V(STEPPER, "Deferred stop: ISR→Poll latency %lu ms",
 				stepper.phase2_timestamp - stepper.phase1_timestamp);
 
-		// Complete full nuclear shutdown (PWM output already stopped by ISR)
-		// This call still needed for: timer base stop, interrupt disable,
-		// GPIO safety/verification, counter reset
+		// PWM output already stopped by the ISR; finish timer base stop,
+		// interrupt disable, GPIO isolation, counter reset
 		Stepper_StopPWM();
 
-		// One-shot post-stop verification ("set once, verify once")
-		// Catches any deferred-stop-sequence failure immediately
+		// One-shot post-stop verification
 		Stepper_SuppressIdleInterrupts();
 		Stepper_SetOutputProtection(true);
-		Stepper_ResetIdleCounters(); //Fresh counters for this idle period
+		Stepper_ResetIdleCounters();
 		Stepper_CheckIdleState();
 
-		DBG_PRINT(STEPPER,
-				"Hybrid deferred stop completed - full shutdown done");
+		DBG_PRINT(STEPPER, "Deferred stop completed - full shutdown done");
 	}
 }
 
@@ -1032,10 +970,10 @@ uint32_t Stepper_GetTimerPSC(void) {
 }
 
 /**
- * @brief Read-and-clear pending stepper event flags (CT-03)
+ * @brief Read-and-clear pending stepper event flags
  * @retval Bitmask of STEPPER_EVT_* flags that were pending
- * @note  Uses __disable_irq()/__enable_irq() for atomic read-and-clear
- *        to prevent race with TIM1 ISR writing the bitfield.
+ * @note  __disable_irq()/__enable_irq() makes the read-and-clear atomic
+ *        against the TIM1 ISR writing the bitfield.
  */
 uint32_t Stepper_GetPendingEvents(void) {
 	__disable_irq();

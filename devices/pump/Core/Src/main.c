@@ -1030,7 +1030,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-	// BUG FIX #4: ENABLE_Pin separated from batch write.
+	// ENABLE_Pin deliberately separate from the batch write.
 	// TMC2209 EN is ACTIVE LOW: GPIO_PIN_RESET = driver ENABLED (draws IHOLD).
 	// Boot with ENABLE_Pin HIGH (disabled) so coils are de-energized until
 	// firmware explicitly enables the driver via Stepper_Enable().
@@ -1108,7 +1108,7 @@ void Error_Handler(void)
 	 * This function may be called very early (before Log_Init / LEDControl_Init),
 	 * so we use only RTT and direct GPIO — no PWM, no UART. */
 
-	/* ── Phase 1 (before IRQ disable): RTT diagnostic ── */
+	/* ── RTT diagnostic (before IRQ disable) ── */
 	/* RTT self-initialises on first write, so this is safe at any point;
 	 * the message stays readable in the RAM buffer even after the halt
 	 * (probe-rs/RTT viewer, or GDB symbol _SEGGER_RTT). */
@@ -1117,7 +1117,7 @@ void Error_Handler(void)
 
   __disable_irq();
 
-	/* ── Phase 2 (IRQs off): reconfigure LED pins as plain GPIO ── */
+	/* ── IRQs off: reconfigure LED pins as plain GPIO ── */
 	/* Common-anode tri-LED: GPIO LOW = LED ON, GPIO HIGH = LED OFF.
 	 * Red = PA0 (was TIM2_CH1), Blue = PA4 (was TIM3_CH2), Green = PB6 (was TIM4_CH1). */
 	{
@@ -1140,7 +1140,7 @@ void Error_Handler(void)
 		HAL_GPIO_Init(GPIOA, &gpio);
 	}
 
-	/* ── Phase 3: blink red LED forever (crude software delay) ── */
+	/* ── Blink red LED forever (crude software delay) ── */
 	/* HAL_Delay / HAL_GetTick won't work (SysTick ISR disabled).
 	 * Use a volatile spin loop calibrated for ~200 ms at 80 MHz. */
   while (1)

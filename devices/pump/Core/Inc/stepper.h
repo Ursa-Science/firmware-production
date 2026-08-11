@@ -83,10 +83,10 @@ typedef struct {
 #define STEPPER_STEPS_PER_REV       200
 #define STEPPER_MAX_SPEED_RPM       120    // Maximum safe RPM — carried over from the
                                            // WPX-1 (tested 12/30/2025); NOT yet
-                                           // re-established for the NEMA 17 (Phase 5)
+                                           // re-established for the NEMA 17
 
 /* PWM step pulse width */
-#define PWM_DUTY_DEFAULT            8    // Duty cycle % (Fix 20: reverted to 8% — old working code proved 8% sufficient; 50% created excess EMI/noise on custom PCB)
+#define PWM_DUTY_DEFAULT            8    // Step pulse duty cycle %; 8% proven sufficient — higher duty caused EMI/noise on the custom PCB
 /* Exported functions --------------------------------------------------------*/
 /**
  * @brief Initialize stepper motor driver
@@ -151,7 +151,7 @@ void Stepper_StartJog(void);
 int32_t Stepper_GetPosition(void);
 
 /**
- * @brief Read-and-clear pending stepper event flags (CT-03)
+ * @brief Read-and-clear pending stepper event flags
  * @retval Bitmask of STEPPER_EVT_* flags that were pending
  * @note  Atomically reads and clears the ISR-written bitfield using
  *        __disable_irq()/__enable_irq() to prevent read-modify-write races.
@@ -223,14 +223,14 @@ void Stepper_SetOutputProtection(bool idle);
 /**
  * @brief Get current TIM1 Auto-Reload Register value
  * @retval Current ARR value (step period in timer ticks)
- * @note TC-01 fix: Keeps all TIM1 register access within stepper module
+ * @note Keeps all TIM1 register access within the stepper module
  */
 uint32_t Stepper_GetTimerARR(void);
 
 /**
  * @brief Get current TIM1 Prescaler Register value
  * @retval Current PSC value
- * @note TC-01 fix: Keeps all TIM1 register access within stepper module
+ * @note Keeps all TIM1 register access within the stepper module
  */
 uint32_t Stepper_GetTimerPSC(void);
 

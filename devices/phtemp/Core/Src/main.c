@@ -722,7 +722,7 @@ void Error_Handler(void)
 	 * This function may be called very early (before Log_Init / LEDControl_Init),
 	 * so we use only blocking UART and direct GPIO — no ring-buffer log, no PWM. */
 
-	/* ── Phase 1 (before IRQ disable): blocking UART diagnostic ── */
+	/* ── Blocking UART diagnostic (before IRQ disable) ── */
 	{
 		const char msg[] =
 				"\r\n[FATAL] Error_Handler() entered — system halted\r\n";
@@ -734,7 +734,7 @@ void Error_Handler(void)
 
 	__disable_irq();
 
-	/* ── Phase 2 (IRQs off): reconfigure LED pins as plain GPIO ── */
+	/* ── IRQs off: reconfigure LED pins as plain GPIO ── */
 	/* Common-anode tri-LED: GPIO LOW = LED ON, GPIO HIGH = LED OFF.
 	 * Red = PA0 (was TIM2_CH1), Blue = PA4 (was TIM3_CH2), Green = PB6 (was TIM4_CH1). */
 	{
@@ -757,7 +757,7 @@ void Error_Handler(void)
 		HAL_GPIO_Init(GPIOA, &gpio);
 	}
 
-	/* ── Phase 3: blink red LED forever (crude software delay) ── */
+	/* ── Blink red LED forever (crude software delay) ── */
 	/* HAL_Delay / HAL_GetTick won't work (SysTick ISR disabled).
 	 * Use a volatile spin loop calibrated for ~200 ms at 80 MHz. */
 	while (1) {
