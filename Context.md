@@ -150,7 +150,17 @@ TWO before done.
 ## Open threads / next
 
 - **Pump fault feedback (plan `docs/PUMP_FAULT_FEEDBACK_PLAN.md`): Phase 0a
-  DONE, Phase 1 CODED 2026-08-12 — NOT yet flashed/bench-validated.**
+  DONE, Phase 1 CODED + BENCH-VALIDATED 2026-08-12** (PROOF3 trace: EMCY
+  `21 71 01 00 00 00 00 03` on real ISR fault path; SDO 0x1001==TPDO2==0x01;
+  reset → EMCY 0x0000; DIAG-classification branches code-reviewed only).
+  **Adjacent bug found (pre-existing, unfixed): driver stays ENERGIZED after
+  fault reset from stepper-origin fault** (post-reset SW=0x0250 bit4; fix =
+  Stepper_Disable() in HandleFaultReset). Bench gotchas now in plan doc:
+  pump IWDG kills halted debug sessions (~2 s budget; freeze via
+  DBGMCU_APB1FZR1 bit12 + gdb `set mem inaccessible-by-default off`);
+  build has 1-byte enums (Tag_ABI_enum_size=small) — take struct-member
+  addresses from DWARF (`gdb --batch -ex "print &'file.c'::var.member"`),
+  never hand-compute.
   Phase 0a (CANopen Magic bench, traces on Samsung T5) proved fault→both
   TPDOs within one SYNC + edge-triggered reset (repeat `84` frame is a NO-OP;
   use `04`→`84`), and caught the **0x1001 dual-source bug**: SDO + EMCY serve

@@ -155,6 +155,28 @@ quick-stop falling edge.)
   SSE stream, and persisted event history.
 
 ### Phase 1 — firmware-only enrichment (no EDS change, no Windows)
+
+**PHASE 1 CODED + BENCH-VALIDATED 2026-08-12** (trace
+cantrace-fault-injection-PROOF3.csv on Samsung T5). Method: pump jogging at
+10 ml/min, `probe-rs write b32 0x20001634 0x773593F6` (stepper
+current_position → just under STEPPER_POSITION_LIMIT; address from DWARF —
+NOTE build has Tag_ABI_enum_size=small, 1-byte enums, never hand-compute
+struct offsets). Observed, byte-exact vs prediction: EMCY
+`082#21 71 01 00 00 00 00 03` (0x7121 motor-blocked, ER=0x01, source=3)
+immediately on ISR trip; fault TPDOs next SYNC; **SDO read 0x1001 returned
+0x01 matching TPDO2 (dual-source fix proven — same read returned 0x00
+pre-fix)**; `04`→`84` reset → EMCY `00…0` + clean TPDOs. gdb `call`-based
+injection was ABANDONED (IWDG resets the board mid-call; see Constraints).
+DIAG-origin classification branches (short/overtemp/comm-fail) are
+code-reviewed only — not safely inducible on bench.
+
+**Adjacent bug FOUND by validation (pre-existing, fix separately):**
+post-reset StatusWord read 0x0250 not 0x0240 — bit 4 (voltage enabled) shows
+the driver still energized after fault reset from a STEPPER-origin fault:
+the stepper-error path never calls Stepper_Disable() (DIAG path does), and
+HandleFaultReset sets current_state=DISABLED without the DISABLED entry
+actions. Coils sit at IHOLD in a state claiming SWITCH_ON_DISABLED. Fix:
+Stepper_Disable() in HandleFaultReset (or stepper-error entry).
 - **Fix the OOB write bug** (delete the `0x67/0x68` writes).
 - **Cause-coded ErrorRegister**: on fault, set standard 0x1001 bits from the
   cause — read DRV_STATUS at fault time (safe now): short → bit0|bit1
@@ -207,6 +229,19 @@ quick-stop falling edge.)
   recovery; shadow PumpState leaving FAULT is the app-visible signal.
 
 ## 3. Constraints & notes
+- **Pump IWDG vs debugger halts (bench gotcha, 2026-08-12):** the pump runs a
+  ~2048 ms IWDG that keeps counting while the core is halted — an interactive
+  gdb session at a breakpoint watchdog-resets the board (boot-up `702#00`,
+  heartbeat drops to pre-op `7F`, TPDOs stop until NMT start `000#01 02`).
+  Either work in one-shot batch mode (`gdb --batch -ex "target
+  extended-remote :1337" -ex "call ..." -ex detach` — well under the budget),
+  or freeze the IWDG under halt once per power cycle: `set mem
+  inaccessible-by-default off` then set DBGMCU_APB1FZR1 bit 12
+  (`*(uint32*)0xE0042008 |= 1<<12`; probe-rs gdb stub rejects the address
+  without the mem setting). Also: gdb-poking `fault_active` no longer
+  produces ER/EMCY after Phase 1 — it bypasses MotorControl_EnterFault();
+  use `call 'motor_control.c'::MotorControl_EnterFault(1)` or a stepper
+  position-limit trip instead.
 - EDS regeneration is Windows-only (CANopen Architect, `.cax` not vendored) —
   Phase 2 must batch all object additions into one regen session.
 - Pump TPDOs are re-asserted via `MCO_InitTPDOFull` in `stackinit.h`; any
