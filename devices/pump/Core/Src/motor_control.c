@@ -94,6 +94,32 @@ extern TIM_HandleTypeDef htim4;  // Green LED - TIM4 CH1
 #define PUMPSTATE_FAULT         0x05
 #define PUMPSTATE_HALT          0x06
 
+// CiA 301 ErrorRegister (0x1001) bits
+#define ERREG_GENERIC           0x01
+#define ERREG_CURRENT           0x02
+#define ERREG_TEMPERATURE       0x08
+#define ERREG_COMMUNICATION     0x10
+// Bits this module owns in 0x1001. The MCO stack sets others itself (e.g.
+// 0x20 on init failure) — fault reset must clear only ours.
+#define ERREG_MOTOR_BITS        (ERREG_GENERIC | ERREG_CURRENT \
+		| ERREG_TEMPERATURE | ERREG_COMMUNICATION)
+
+// CiA 301/402 EMCY error codes
+#define EMCY_CODE_RESET         0x0000  // error cleared / no error
+#define EMCY_CODE_GENERIC       0x1000
+#define EMCY_CODE_CURRENT       0x2310  // continuous over-current, output side
+#define EMCY_CODE_TEMPERATURE   0x4210  // device temperature
+#define EMCY_CODE_MOTOR_BLOCKED 0x7121
+
+// Fault source (EMCY manufacturer byte 5; becomes OD 0x2503 in Phase 2)
+#define FAULT_SRC_NONE          0x00
+#define FAULT_SRC_DIAG_SHORT    0x01  // TMC DIAG latched, DRV_STATUS shows short
+#define FAULT_SRC_DIAG_OT       0x02  // TMC DIAG latched, DRV_STATUS shows overtemp
+#define FAULT_SRC_STEPPER       0x03  // stepper layer error (position overflow)
+#define FAULT_SRC_TMC_INIT      0x04  // reserved: boot-time init failure (Phase 2)
+#define FAULT_SRC_TMC_COMM      0x05  // TMC DIAG latched but DRV_STATUS unreadable
+#define FAULT_SRC_DIAG_UNKNOWN  0x06  // TMC DIAG latched, no cause flag set
+
 // Dose status values (0x2303)
 #define DOSE_STATUS_IDLE        0x00
 #define DOSE_STATUS_RUNNING     0x01
@@ -137,6 +163,7 @@ typedef struct {
 	// State tracking
 	uint8_t pump_state;
 	bool fault_active;
+	uint8_t error_register;  // cause-coded 0x1001 value, set/cleared at fault entry/exit
 
 	// Dose tracking (latched parameters approach)
 	DoseTracker_t dose_tracker;
@@ -183,6 +210,7 @@ static bool CheckTransitionBlocking(MotorState_t target_state,
 		uint16_t control_word);
 static void ExecuteExitActions(MotorState_t target_state);
 static void ExecuteEntryActions(MotorState_t target_state);
+static void MotorControl_EnterFault(bool diag_latched);
 static uint16_t MotorControl_GenerateStatusWord(void);
 static void MotorControl_UpdateProcessImage(void);
 static void MotorControl_CheckDoseProgress(void);
@@ -190,6 +218,67 @@ static void MotorControl_ProcessStepperEvents(void);
 static void MotorControl_PrintStatus(void);
 static void MotorControl_PrintTimerStats(void);
 static void MotorControl_PrintDiagnostics(void);
+
+/* Fault entry ----------------------------------------------------------------*/
+
+/**
+ * @brief Enter FAULT state with cause classification, dual 0x1001 update, EMCY
+ * @param diag_latched  true = TMC DIAG confirmed latched high (classify via
+ *                      DRV_STATUS); false = stepper-layer error
+ * @note  0x1001 has TWO consumers: TPDO2 is served from the process image
+ *        (published in UpdateProcessImage), but SDO reads (mco.c) and the
+ *        EMCY frame's ER byte (mcop.c) are served from
+ *        gMCOConfig.error_register. The Phase 0a bench proved they disagree
+ *        unless BOTH are written — so both are written here.
+ * @note  Caller keeps responsibility for stopping/de-energizing the stepper
+ *        and aborting any dose; this function only classifies and reports.
+ */
+static void MotorControl_EnterFault(bool diag_latched) {
+	uint16_t emcy_code = EMCY_CODE_GENERIC;
+	uint8_t error_reg = ERREG_GENERIC;
+	uint8_t source = FAULT_SRC_STEPPER;
+	uint32_t drv_status = 0;
+
+	if (diag_latched) {
+		/* Classify from the chip's own fault flags. Real DIAG causes are
+		 * latched by the TMC until the driver is disabled, so DRV_STATUS
+		 * still shows them here. Safe in main-loop context: USART2 is
+		 * TMC-only since logging moved to RTT. */
+		if (TMC2209_ReadDrvStatus(&drv_status) == TMC2209_OK) {
+			if (drv_status & (DRV_STATUS_S2GA | DRV_STATUS_S2GB
+					| DRV_STATUS_S2VSA | DRV_STATUS_S2VSB)) {
+				source = FAULT_SRC_DIAG_SHORT;
+				emcy_code = EMCY_CODE_CURRENT;
+				error_reg |= ERREG_CURRENT;
+			} else if (drv_status & (DRV_STATUS_OT | DRV_STATUS_OTPW)) {
+				source = FAULT_SRC_DIAG_OT;
+				emcy_code = EMCY_CODE_TEMPERATURE;
+				error_reg |= ERREG_TEMPERATURE;
+			} else {
+				source = FAULT_SRC_DIAG_UNKNOWN;
+			}
+		} else {
+			source = FAULT_SRC_TMC_COMM;
+			error_reg |= ERREG_COMMUNICATION;
+		}
+	} else {
+		emcy_code = EMCY_CODE_MOTOR_BLOCKED;
+	}
+
+	motor_ctrl.current_state = MOTOR_STATE_FAULT;
+	motor_ctrl.pump_state = PUMPSTATE_FAULT;
+	motor_ctrl.fault_active = true;
+	motor_ctrl.error_register = error_reg;
+	gMCOConfig.error_register |= error_reg;
+
+	/* Event-driven EMCY — reaches the master even with SYNC off. Payload:
+	 * error code + ER (stack inserts it) + DRV_STATUS snapshot (LE) + source. */
+	MCOP_PushEMCY(emcy_code, (uint8_t) drv_status, (uint8_t) (drv_status >> 8),
+			(uint8_t) (drv_status >> 16), (uint8_t) (drv_status >> 24), source);
+
+	DBG_ERROR(MOTOR, "FAULT entered: source=%u, EMCY=0x%04X, ER=0x%02X, DRV_STATUS=0x%08lX",
+			source, emcy_code, error_reg, (unsigned long) drv_status);
+}
 
 /* Stepper event handling ----------------------------------------------------*/
 
@@ -224,9 +313,7 @@ static void MotorControl_ProcessStepperEvents(void) {
 
 	if (events & STEPPER_EVT_ERROR) {
 		DBG_ERROR(MOTOR, "Stepper ERROR event → entering FAULT state");
-		motor_ctrl.current_state = MOTOR_STATE_FAULT;
-		motor_ctrl.pump_state = PUMPSTATE_FAULT;
-		motor_ctrl.fault_active = true;
+		MotorControl_EnterFault(false);
 
 		// Abort dose if active
 		if (motor_ctrl.dose_tracker.dose_active) {
@@ -250,9 +337,7 @@ static void MotorControl_ProcessStepperEvents(void) {
 				== GPIO_PIN_SET) {
 			DBG_ERROR(MOTOR,
 					"TMC2209 DIAG latched HIGH (short/overtemp) → FAULT, driver disabled");
-			motor_ctrl.current_state = MOTOR_STATE_FAULT;
-			motor_ctrl.pump_state = PUMPSTATE_FAULT;
-			motor_ctrl.fault_active = true;
+			MotorControl_EnterFault(true);
 
 			if (motor_ctrl.dose_tracker.dose_active) {
 				DBG_STATE(DOSE,
@@ -302,6 +387,7 @@ bool MotorControl_Init(void) {
 	motor_ctrl.current_state = MOTOR_STATE_DISABLED; // Initialize state machine
 	motor_ctrl.pump_state = PUMPSTATE_INIT;
 	motor_ctrl.fault_active = false;
+	motor_ctrl.error_register = 0;
 
 	// Initialize dose tracker
 	memset(&motor_ctrl.dose_tracker, 0, sizeof(DoseTracker_t));
@@ -432,6 +518,8 @@ void MotorControl_Reset(void) {
 		motor_ctrl.target_flow_ml_min = 0;
 		motor_ctrl.pump_state = PUMPSTATE_STOPPED;
 		motor_ctrl.fault_active = false;
+		motor_ctrl.error_register = 0;
+		gMCOConfig.error_register &= (uint8_t) ~ERREG_MOTOR_BITS;
 		motor_ctrl.current_state = MOTOR_STATE_DISABLED;
 		last_known_target_flow_ml_min = 0;
 
@@ -524,6 +612,14 @@ static bool HandleFaultReset(uint16_t rising_edges) {
 		motor_ctrl.fault_active = false;
 		motor_ctrl.current_state = MOTOR_STATE_DISABLED;
 		motor_ctrl.pump_state = PUMPSTATE_STOPPED;
+
+		// Clear 0x1001 in BOTH homes (see MotorControl_EnterFault) — but only
+		// the motor-owned bits; the stack owns others (e.g. 0x20 init error).
+		motor_ctrl.error_register = 0;
+		gMCOConfig.error_register &= (uint8_t) ~ERREG_MOTOR_BITS;
+
+		// CiA 301 "error reset / no error" — master sees recovery event-driven
+		MCOP_PushEMCY(EMCY_CODE_RESET, 0, 0, 0, 0, FAULT_SRC_NONE);
 		return true;
 	}
 	return false;
@@ -1174,9 +1270,10 @@ static void MotorControl_UpdateProcessImage(void) {
 			motor_ctrl.fault_active ? PUMPSTATE_FAULT : motor_ctrl.pump_state;
 	ProcImg_SetPumpState(pump_state);
 
-	// Update ErrorRegister (0x1001) if fault
+	// Update ErrorRegister (0x1001) — cause-coded value maintained at fault
+	// entry/exit (MotorControl_EnterFault / HandleFaultReset)
 	if (motor_ctrl.fault_active) {
-		ProcImg_SetErrorRegister(0x01);  // Generic error
+		ProcImg_SetErrorRegister(motor_ctrl.error_register);
 	} else {
 		ProcImg_SetErrorRegister(0x00);
 	}

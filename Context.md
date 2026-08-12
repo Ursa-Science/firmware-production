@@ -149,18 +149,24 @@ TWO before done.
 
 ## Open threads / next
 
-- **NEXT: pump fault feedback → master. Plan is `PUMP_FAULT_FEEDBACK_PLAN.md`**
-  (read it before starting; corrected 2026-08-10 for the CANOpenGateway
-  master). Key facts: a GENERIC fault already reaches the bus (DIAG→EXTI→
-  FAULT state→TPDO1 StatusWord 0x0008 + TPDO2 PumpState/ErrorRegister every
-  SYNC; pump TPDOs use MCO_InitTPDOFull so the valve 0x1001 bug doesn't
-  apply). Gaps: no fault cause; EMCY compiled in (USE_EMCY=1,
-  MCOP_PushEMCY) but never called; TMC detail never leaves the board.
-  Phase 0 = verify existing path via gateway REST/SSE (debugger-forced
-  fault_active; do NOT short motor phases). Phase 1 = firmware-only (fix
-  gProcImg OOB bug, cause-coded 0x1001 bits, EMCY on fault entry/exit).
-  Phase 2 = EDS objects 0x2500-0x2503 (Windows; propagate to BOTH repos +
-  bridge image rebuild). Phase 3 = app layer (MIK web app), not gateway.
+- **Pump fault feedback (plan `docs/PUMP_FAULT_FEEDBACK_PLAN.md`): Phase 0a
+  DONE, Phase 1 CODED 2026-08-12 — NOT yet flashed/bench-validated.**
+  Phase 0a (CANopen Magic bench, traces on Samsung T5) proved fault→both
+  TPDOs within one SYNC + edge-triggered reset (repeat `84` frame is a NO-OP;
+  use `04`→`84`), and caught the **0x1001 dual-source bug**: SDO + EMCY serve
+  gMCOConfig.error_register, TPDO2 serves the procimg copy; app only wrote
+  procimg → SDO said 0x00 during fault. Phase 0b (gateway) SKIPPED for now
+  (carry-forward: does dcfgen boot DCF write 0x1016? gateway shadow on the
+  0x1001 disagreement?). Phase 1 changes (devices/pump only, builds clean):
+  main.c OOB gProcImg[0x67/0x68] writes DELETED; MotorControl_EnterFault()
+  classifies cause from DRV_STATUS at DIAG-fault time (short→ER|=0x02/EMCY
+  0x2310, overtemp→ER|=0x08/0x4210, stepper→0x7121, unreadable→ER|=0x10),
+  writes BOTH 0x1001 homes, pushes EMCY w/ DRV_STATUS snapshot + source byte
+  (future 0x2503 enum); fault reset clears both (motor-owned bits only) +
+  EMCY 0x0000. NOTE: debugger-poking fault_active no longer shows ER=0x01
+  (bypasses EnterFault by design) — validate via STEPPER position-limit
+  poke or gdb `call`. Phase 2 = EDS 0x2500-0x2503, BATCHED with dose-strip
+  OD change. Phase 3 = MIK app layer.
 - **Pump stepper-code audit (2026-08-11): items 1-3 DONE.** (1) `d14edb7`
   pure removal (−483 lines dead API/state) — HW-validated same day (bench log:
   init verified, run/stop/quickstop at 10-79 RPM clean, step rate 1.00x).
@@ -179,13 +185,18 @@ TWO before done.
   HW-VALIDATED 2026-08-11; pump RTT strings renamed: "Phase 3.2:" prefixes
   gone, "Fix16:" gone, "Phase1→Phase2 latency" → "Deferred stop: ISR→Poll
   latency" — update any log greps.
-- **PLANNED, BLOCKED: strip dosing engine from pump firmware → MIK owns
-  dosing.** Plan + FE-conversation agenda: `PUMP_DOSE_TRANSFER_PLAN.md`.
-  Do NOT start until Dakota's in-depth FE conversation settles the open
-  questions (volume truth, stop-latency tolerance, heartbeat runaway
-  failsafe, OD contract). EDS changes must be batched with fault-feedback
-  Phase 2 objects into ONE regen cycle. Firmware ends up a plain CiA 402
-  velocity device (~400 lines of dose state out of motor_control.c).
+- **PLANNED, direction settled 2026-08-12: strip dosing engine from pump
+  firmware → "dumb pump" step-counter model.** Plan: `PUMP_DOSE_TRANSFER_PLAN.md`
+  (rewritten 2026-08-12). MIK owns ALL ml math + tubing calibration; pump
+  speaks only steps + steps/s (0x6042/0x6043 change UNITS ml/min→steps/s;
+  0x2200 + 0x2300-0x2305 deleted; new TargetSteps/StepsRemaining; RPDO1 =
+  CW+StepRate+TargetSteps = one atomic 8-byte frame). Firmware gains a
+  small primitive: run N steps at rate R, ISR-decremented, decel-ramp-aware
+  auto-stop (self-terminating dose = better runaway guard than old timeout).
+  Still open before implementation: Q3 heartbeat bench test, Q4 index
+  naming, stale-CW-after-complete ownership. EDS changes batch with
+  fault-feedback Phase 2 objects into ONE regen cycle (~400 lines of dose
+  state out of motor_control.c).
 - Pump logging = RTT (`probe-rs attach --chip STM32G431KBTx build/pump.elf`);
   console noise: `[STEPPER]` step-rate block prints 1/s — set
   DBG_STEPPER_ENABLE 0 for quieter sessions (timer proven correct). Known

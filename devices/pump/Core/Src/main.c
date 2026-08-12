@@ -334,14 +334,10 @@ int main(void)
 	 * datagrams were transmitted. */
 	TMC2209_Status_t tmc_status = TMC2209_Init();
 
-	/* Store TMC2209 init results in process image for SDO readback.
-	 * OD 0x2500 = init status (0=OK, 1-6=error), OD 0x2501 = failed step.
-	 * Offsets 0x67/0x68 match P250000/P250100 in pimg.h. */
-	{
-		extern uint8_t gProcImg[];
-		gProcImg[0x67] = (uint8_t) tmc_status;
-		gProcImg[0x68] = (uint8_t) TMC2209_GetInitFailedStep();
-	}
+	/* NOTE: init status is NOT stored in the process image — 0x2500/0x2501 do
+	 * not exist in the OD yet (fault-feedback Phase 2 adds them). The writes
+	 * that used to sit here targeted gProcImg[0x67/0x68], PAST the end of the
+	 * process image (PIMGEND=0x66) — an out-of-bounds clobber on every boot. */
 
 	/* (The old 0x0F/ESC(B terminal-reset hack is gone: logging now goes out
 	 * over RTT/SWD, so the console never sees TMC2209 datagram bytes and
