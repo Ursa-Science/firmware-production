@@ -170,13 +170,16 @@ injection was ABANDONED (IWDG resets the board mid-call; see Constraints).
 DIAG-origin classification branches (short/overtemp/comm-fail) are
 code-reviewed only — not safely inducible on bench.
 
-**Adjacent bug FOUND by validation (pre-existing, fix separately):**
-post-reset StatusWord read 0x0250 not 0x0240 — bit 4 (voltage enabled) shows
-the driver still energized after fault reset from a STEPPER-origin fault:
-the stepper-error path never calls Stepper_Disable() (DIAG path does), and
-HandleFaultReset sets current_state=DISABLED without the DISABLED entry
-actions. Coils sit at IHOLD in a state claiming SWITCH_ON_DISABLED. Fix:
-Stepper_Disable() in HandleFaultReset (or stepper-error entry).
+**Adjacent bug FOUND by validation — FIXED + HW-VALIDATED same day
+(commit `0ec936a`):** post-reset StatusWord read 0x0250 not 0x0240 — bit 4
+(voltage enabled) showed the driver still energized after fault reset from a
+STEPPER-origin fault (physical confirmation: 0.082 A hold draw + audible
+whine). Cause: the stepper-error path never calls Stepper_Disable() (DIAG
+path does), and HandleFaultReset set current_state=DISABLED without the
+DISABLED entry actions. Fix: Stepper_Stop()-if-moving + Stepper_Disable()
+in HandleFaultReset. Bench re-run: post-reset TPDO1 = `40 02 00 00`, zero
+hold current. (Bench tip: SW bit 4 mirrors the firmware's own enabled flag —
+if it reads 1 after a "fixed" reset, the board is running a stale build.)
 - **Fix the OOB write bug** (delete the `0x67/0x68` writes).
 - **Cause-coded ErrorRegister**: on fault, set standard 0x1001 bits from the
   cause — read DRV_STATUS at fault time (safe now): short → bit0|bit1

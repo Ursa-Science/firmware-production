@@ -153,9 +153,9 @@ TWO before done.
   DONE, Phase 1 CODED + BENCH-VALIDATED 2026-08-12** (PROOF3 trace: EMCY
   `21 71 01 00 00 00 00 03` on real ISR fault path; SDO 0x1001==TPDO2==0x01;
   reset → EMCY 0x0000; DIAG-classification branches code-reviewed only).
-  **Adjacent bug found (pre-existing, unfixed): driver stays ENERGIZED after
-  fault reset from stepper-origin fault** (post-reset SW=0x0250 bit4; fix =
-  Stepper_Disable() in HandleFaultReset). Bench gotchas now in plan doc:
+  Adjacent bug (driver stayed ENERGIZED after fault reset from stepper-origin
+  fault, post-reset SW=0x0250 bit4) FIXED `0ec936a` + HW-validated same day
+  (post-reset SW=0x0240, zero hold current). Bench gotchas now in plan doc:
   pump IWDG kills halted debug sessions (~2 s budget; freeze via
   DBGMCU_APB1FZR1 bit12 + gdb `set mem inaccessible-by-default off`);
   build has 1-byte enums (Tag_ABI_enum_size=small) — take struct-member
