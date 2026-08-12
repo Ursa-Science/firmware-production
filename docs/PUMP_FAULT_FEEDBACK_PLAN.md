@@ -87,6 +87,61 @@ exist in the EDS.
 ## 2. Proposed plan (phased)
 
 ### Phase 0 — verify the existing path end-to-end (bench, no firmware code)
+
+**PHASE 0a COMPLETE 2026-08-12.** Evidence: three CANopen Magic traces in
+`/Volumes/Samsung_T5/ursaScience/debug-cantraces/` (cantrace-fault-injection*.csv).
+Demonstrated: fault (probe-rs write of `fault_active` @0x200015e2, build
+2026-08-11) appears atomically in BOTH TPDOs on the same SYNC cycle
+(`182#08 02 00 00` + `282#05 01 00 00 00 00`), stable for hundreds of cycles;
+SDO channel works (0.5 ms turnaround) but exposed the 0x1001 dual-source bug
+below (3× SDO reads returned 0x00 during active fault while TPDO2 broadcast
+0x01); fault-reset is edge-triggered (repeated `84` frame is a no-op — the
+`04`→`84` two-step recovers in ~2 SYNC cycles). Not exercised: SDO reads of
+0x2400/0x6041 while faulted; SYNC-pause demo. **Phase 0b (gateway) SKIPPED
+for now by decision 2026-08-12** — carry its two checks forward: does dcfgen's
+boot DCF write 0x1016 (heartbeat consumer), and gateway shadow behavior on the
+0x1001 SDO-vs-TPDO disagreement.
+
+**Phase 0a — CANopen Magic (decided 2026-08-12):** validate on the wire
+with CANopen Magic as the ONLY master before involving the gateway (gateway
+machine OFF the bus — one SYNC producer only; remember the June SYNC-doubling
+lesson). Magic transmits SYNC 0x080 DLC0 @100 ms (TPDOs are sync-type 1).
+Node-2 frames (little-endian): NMT start `000#01 02`; fault inject = gdb via
+`probe-rs gdb --chip STM32G431KBTx` → `set var
+'motor_control.c'::motor_ctrl.fault_active = 1` while idle; expect within one
+SYNC: TPDO1 `182#08 02 00 00` (SW=0x0208 FAULT+remote) and TPDO2
+`282#05 01 00 00 00 00` (PumpState=FAULT, ErrorReg=0x01); EMCY 0x082 silent
+(baseline — Phase 1 adds it). SDO cross-check: `602#40 01 10 00…` →
+`582#4F 01 10 00 01…`. Fault reset `202#84 00 00 00` (bit 2 held high to
+avoid the quick-stop falling edge) → TPDO1 `40 02 00 00`, TPDO2
+`01 00 00 00 00 00`. Save the trace as the exit artifact.
+
+**FINDING (2026-08-12), answers half of dose-plan Q3:** the pump has NO
+heartbeat consumer armed at boot — `INITHBCONSUMER_CALLS` in stackinit.h is
+EMPTY and 0x1016 subs have empty EDS defaults. `MCO_EVENT_HEARTBEAT_LOST →
+EmergencyStop` is dead code unless the master SDO-writes 0x1016 at startup.
+Bench needs no fake master heartbeat; the runaway backstop question moves to
+"does the gateway's dcfgen concise-DCF write 0x1016?" (verify in Phase 0b) —
+if not, arming it is a gateway/DCF config change, not firmware.
+
+**FINDING (2026-08-12, Phase 0a bench): 0x1001 has TWO sources of truth.**
+SDO read of 0x1001 returned 0x00 while TPDO2 was simultaneously broadcasting
+ErrorRegister=0x01. Cause (code-confirmed): the SDO server answers 0x1001
+from `gMCOConfig.error_register` (mco.c:1285-1292), and EMCY frames embed the
+same variable (mcop.c:708/723) — but the app only writes the PROCESS-IMAGE
+copy (`ProcImg_SetErrorRegister`, mapped into TPDO2). `gMCOConfig.error_register`
+is never set on motor/TMC fault. Consequences: SDO and TPDO2 disagree today,
+and a Phase-1 EMCY would carry ER=0x00 in its error-register byte. **Phase 1
+must write BOTH on fault entry/exit** (set/clear `gMCOConfig.error_register`
+alongside the procimg copy), or unify on gMCOConfig with a procimg mirror.
+
+**Bench gotcha (2026-08-12): fault-reset is EDGE-triggered — a repeated
+`202#84 00 00 00` is a NO-OP** if ControlWord bit 7 is already 1 from a prior
+reset (RPDO data latches; no rising edge). Send `202#04 00 00 00` first to
+drop bit 7, then `202#84 00 00 00`. (Bit 2 held high in both to avoid the
+quick-stop falling edge.)
+
+**Phase 0b — same injection through the gateway:**
 - Induce a fault safely (force `fault_active` via debugger — do NOT short
   motor phases) and confirm through the gateway:
   - `GET /v1/devices/2` shadow shows PumpState=FAULT (0x2400) and
