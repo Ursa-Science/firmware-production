@@ -5,7 +5,7 @@ Not a tutorial and not the running log — that is `BUILD_NOTES.md`, which holds
 detailed findings, gotchas, and history. Read this first, then BUILD_NOTES.md for
 depth. Keep this file terse and current; prune stale lines rather than appending.
 
-Last updated: 2026-08-10.
+Last updated: 2026-08-12.
 
 ---
 
@@ -195,6 +195,13 @@ TWO before done.
   HW-VALIDATED 2026-08-11; pump RTT strings renamed: "Phase 3.2:" prefixes
   gone, "Fix16:" gone, "Phase1→Phase2 latency" → "Deferred stop: ISR→Poll
   latency" — update any log greps.
+- **NEXT (as of 2026-08-12): dose-strip decisions → combined EDS regen.**
+  Fault-feedback Phase 1 is DONE (see bullet above); the path forward is:
+  settle the two open dose-plan decisions (Q4 rename-vs-relocate for
+  0x6042/0x6043 given the ml/min→steps/s unit change; who blocks stale
+  ControlWord after dose complete), then ONE Windows regen batching
+  fault Phase 2 objects (0x2500-0x2503) + the dose-strip OD change, then
+  the ~400-line dose-engine deletion + step-counter primitive.
 - **PLANNED, direction settled 2026-08-12: strip dosing engine from pump
   firmware → "dumb pump" step-counter model.** Plan: `PUMP_DOSE_TRANSFER_PLAN.md`
   (rewritten 2026-08-12). MIK owns ALL ml math + tubing calibration; pump

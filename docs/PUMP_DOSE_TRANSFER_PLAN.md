@@ -7,7 +7,7 @@ be batched with fault-feedback Phase 2 objects (0x2500-0x2503) into ONE
 Windows regen / propagate / revalidate cycle.
 
 Written 2026-08-11 after the pump stepper-code audit; direction revised
-2026-08-12 per `dose-engine refactoring-prompt.md` (step counter, not pure
+2026-08-12 per Dakota's dose-engine refactoring prompt (step counter, not pure
 velocity device) and the rate-units discussion.
 
 ---
