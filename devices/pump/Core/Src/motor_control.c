@@ -609,6 +609,17 @@ static bool HandleFaultReset(uint16_t rising_edges) {
 	if (rising_edges & CONTROLWORD_FAULT_RESET) {
 		DBG_STATE(MOTOR, "ACTION: RESET fault");
 		Stepper_ClearError();
+
+		// De-energize: this transition enters SWITCH_ON_DISABLED directly,
+		// bypassing the DISABLED entry actions — without an explicit disable
+		// the driver stays energized after a stepper-origin fault (DIAG
+		// faults disable at entry; bench 2026-08-12: post-reset StatusWord
+		// 0x0250, bit 4 set). CiA 402: SWITCH_ON_DISABLED = power stage off.
+		if (Stepper_IsMoving()) {
+			Stepper_Stop();
+		}
+		Stepper_Disable();
+
 		motor_ctrl.fault_active = false;
 		motor_ctrl.current_state = MOTOR_STATE_DISABLED;
 		motor_ctrl.pump_state = PUMPSTATE_STOPPED;
