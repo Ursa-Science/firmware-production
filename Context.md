@@ -60,9 +60,8 @@ functionally equivalent to the CubeIDE build on real devices.
   `DBG_TMC_ENABLE` in log.h — flag 0 compiles out the UART reads too. Same
   commit FIXED the DRV_STATUS bit defines (were TMC2130-layout; TMC2209 flags
   are bits 0..11).
-- **BUG (open, fix in fault-feedback Phase 1):** `main.c` writes
-  `gProcImg[0x67/0x68]` but PIMGEND=0x66 — OUT-OF-BOUNDS past the process
-  image on every boot. The claimed P250000/P250100 pimg symbols don't exist.
+- OOB `gProcImg[0x67/0x68]` boot-write bug: FIXED in fault-feedback Phase 1
+  (`0e7ea36`, writes deleted; values return in Phase 2 with real 0x2500/0x2501).
 
 ### Repo location (as of 2026-07-29)
 Code has been copied into the org repo **/Users/dakotaward/code/firmware-production**
@@ -195,6 +194,15 @@ TWO before done.
   HW-VALIDATED 2026-08-11; pump RTT strings renamed: "Phase 3.2:" prefixes
   gone, "Fix16:" gone, "Phase1→Phase2 latency" → "Deferred stop: ISR→Poll
   latency" — update any log greps.
+- **Fault-injection playbook (2026-08-13): `docs/PUMP_FAULT_INJECTION_PLAYBOOK.md`**
+  — full emitter map (app A1-A10 + stack S1-S4 → EMCY/TPDO/SDO) and bench
+  injection commands (probe-rs no-halt pokes + CAN-side frames) with
+  DWARF-derived addresses @ `bb64c23` (re-derive after ANY rebuild — gdb
+  one-liner in the doc). Use it to validate Phase 2 / dose-strip firmware.
+  Notable analysis findings: heartbeat-lost stop reports PumpState=STOPPED
+  not FAULT (only stack EMCY 0x8130 announces it); any stack EMCY latches
+  gMCOConfig ER bit0 until a fault/NMT reset; A8/A9 (init-fail, TX-overflow
+  fatal) are emitters with no practical injection.
 - **NEXT (as of 2026-08-12): dose-strip decisions → combined EDS regen.**
   Fault-feedback Phase 1 is DONE (see bullet above); the path forward is:
   settle the two open dose-plan decisions (Q4 rename-vs-relocate for
