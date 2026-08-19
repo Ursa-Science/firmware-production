@@ -38,6 +38,7 @@ typedef enum {
 #define STEPPER_EVT_AT_SPEED  (1U << 1)  // Acceleration reached target speed
 #define STEPPER_EVT_ERROR     (1U << 2)  // Hardware fault detected (e.g. position overflow)
 #define STEPPER_EVT_DRV_FAULT (1U << 3)  // TMC2209 DIAG rose (driver error; confirm by level)
+#define STEPPER_EVT_TARGET_REACHED (1U << 4)  // Step-counted move delivered its exact pulse count
 
 /**
  * @brief Stepper Motor Direction
@@ -143,6 +144,17 @@ uint16_t Stepper_GetSpeedRPM(void);
  * @brief Start continuous movement (jog mode)
  */
 void Stepper_StartJog(void);
+
+/**
+ * @brief Start a step-counted move: deliver EXACTLY `count` pulses then auto-stop
+ * @param count microstep pulses to emit; 0 = unlimited (falls through to jog)
+ * @note  Set direction + speed (Stepper_SetDirection / Stepper_SetSpeedRPM)
+ *        BEFORE calling. The TIM1 ISR decrements an internal counter and forces
+ *        a deferred stop on the exact pulse, firing STEPPER_EVT_TARGET_REACHED.
+ *        A gentle AVR446 decel begins within braking distance so the final
+ *        pulses land at low speed; the delivered pulse count is exact regardless.
+ */
+void Stepper_StartSteps(uint32_t count);
 
 /**
  * @brief Get current position

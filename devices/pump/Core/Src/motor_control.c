@@ -999,9 +999,12 @@ static void ExecuteEntryActions(MotorState_t target_state) {
 		Stepper_Enable();
 		Stepper_SetOutputProtection(false);
 
-		// Start motor
+		// Start motor. Stepper_StartSteps(0) == continuous jog (0 = unlimited) —
+		// identical to the old Stepper_StartJog() call, routed through the new
+		// step-counter entry point. When the dose strip lands, the OD TargetSteps
+		// value replaces this 0 and continuous vs. counted becomes data-driven.
 		motor_ctrl.pump_state = PUMPSTATE_STARTING;
-		Stepper_StartJog();
+		Stepper_StartSteps(0);
 		motor_ctrl.pump_state = PUMPSTATE_RUNNING;
 		break;
 	}

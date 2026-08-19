@@ -1,10 +1,17 @@
 # Pump Dose-Engine Transfer Plan — firmware → MIK
 
-**Status: DIRECTION SETTLED 2026-08-12 — step-counter model.** Q1/Q2/Q5 are
-resolved (see Decisions). Still open before implementation: Q3 heartbeat
-bench test, and the Q4 index-naming choice for the regen. EDS changes must
-be batched with fault-feedback Phase 2 objects (0x2500-0x2503) into ONE
-Windows regen / propagate / revalidate cycle.
+**Status: DIRECTION SETTLED — all design decisions resolved 2026-08-19.**
+Q1/Q2/Q5 resolved 08-12; Q4 (naming) + stale-CW resolved 08-19 (see
+Decisions). Only Q3 (heartbeat arming, needs gateway/DCF) remains as a
+bench task, not a design blocker. EDS changes batch with fault-feedback
+Phase 2 objects (0x2500-0x2503) into ONE Windows regen / propagate /
+revalidate cycle.
+
+**Build order (chosen 2026-08-19):** firmware-first. The stepper
+step-counter primitive (Stepper_SetStepRate / Stepper_StartSteps /
+STEPPER_EVT_TARGET_REACHED) is OD-independent → build + bench-test it on
+the golden board NOW. The OD-coupled rewiring (motor_control.c + procimg
+accessors) waits on the Windows regen that assigns the new 0x2xxx indices.
 
 Written 2026-08-11 after the pump stepper-code audit; direction revised
 2026-08-12 per Dakota's dose-engine refactoring prompt (step counter, not pure
@@ -111,11 +118,26 @@ Removed from `motor_control.c` (~400 lines):
   `BASE_STEPS_PER_ML`
 
 Added:
-- `stepper.c/h` (~50 lines): `Stepper_SetStepRate(int16 sps)` (ARR direct
-  from steps/s), `Stepper_StartSteps(uint32 count)` alongside
-  `Stepper_StartJog()`; ISR decrements `steps_remaining`, flips to the
-  existing DECELERATING path when `remaining ≤ accel_step_n`, fires new
-  `STEPPER_EVT_TARGET_REACHED`. Count 0 / jog = unlimited.
+- `stepper.c/h`: **`Stepper_StartSteps(uint32 count)` DONE 2026-08-19** —
+  shared `Stepper_BeginMotion()` helper (StartJog refactored onto it,
+  behavior-identical); ISR decrements `steps_remaining`, begins a gentle
+  AVR446 decel when `remaining ≤ accel_step_n`, and forces an EXACT-cutoff
+  deferred stop at `remaining==0` firing `STEPPER_EVT_TARGET_REACHED`. The
+  cutoff (not the ramp) always ends the move → pulse count is exact by
+  construction. Count 0 = jog. Stop/Disable/NormalStop/runaway all clear the
+  target. `motor_control` continuous start routed through
+  `Stepper_StartSteps(0)` (== jog) so the symbol links and the entry point
+  is already the new one.
+  - **`Stepper_SetStepRate(int16 sps)` DEFERRED to OD-wiring** — steps/s-native
+    rate would perturb the validated RPM ramp; motor_control will convert the
+    OD StepRate at wiring time. Rate stays via `Stepper_SetSpeedRPM` meanwhile.
+  - **Validation status:** start path HW-confirmed 2026-08-19 (shares
+    BeginMotion with the 50 ml/min jog, which runs). Count/cutoff logic is
+    code-reviewed only — gdb inferior-`call` cannot start the TIM1 PWM
+    (harness limitation; software reaches state=RUNNING but the timer never
+    counts), so real over-CAN validation of exact-N delivery happens when
+    motor_control legitimately calls Stepper_StartSteps(TargetSteps) at
+    OD-wiring (see checklist "Step-exactness").
 - `motor_control.c`: in `ExecuteEntryActions(RUNNING)` — read TargetSteps;
   if >0 latch + zero the OD value (consume-on-latch, proven pattern) +
   `Stepper_StartSteps()`, else `Stepper_StartJog()`. TARGET_REACHED event →
@@ -143,23 +165,25 @@ StepRate instead of TargetFlowRate.
   DCF does this (fault-plan Phase 0b); if not, arm it via gateway/DCF
   config (or EDS default in the batched regen), then bench-test kill-
   gateway-mid-jog and set the stop deadline (heartbeat period × factor).
-- **Q4 (OD contract): DIRECTION SET, naming open.** Remove 0x2300-0x2305 +
-  0x2200 outright (no reserved stubs). OPEN: since 0x6042/0x6043 change
-  SEMANTICS (ml/min → steps/s), decide whether to rename in place
-  (TargetStepRate/ActualStepRate) or move to manufacturer-specific indices
-  so no old MIK/gateway code silently misreads units. Batch with
-  fault-feedback Phase 2 (0x2500-0x2503): one regen, both repos
+- **Q4 (OD contract): RESOLVED 2026-08-19 — manufacturer indices.** Remove
+  0x2300-0x2305 + 0x2200 outright (no reserved stubs). The four motion
+  quantities move to NEW manufacturer-specific indices (0x2xxx, exact
+  numbers assigned at regen) — NOT reused 0x6042/0x6043 — so no stale
+  MIK/gateway/EDS consumer can silently read steps/s as ml/min. CiA-402
+  ControlWord 0x6040 / StatusWord 0x6041 stay (state machine unchanged).
+  Batch with fault-feedback Phase 2 (0x2500-0x2503): one regen, both repos
   (firmware-production + CANOpenGateway `bridge/devices/`), bridge image
   rebuild, one revalidation.
 - **Q5 (dose UX states): RESOLVED — MIK owns them.** DoseStatus semantics
   move upstairs; the old "false dose-ended monitored PumpState" driver bug
   class is structurally moot.
-- **NEW — stale-ControlWord after dose completes: OPEN.** With TargetSteps
-  consumed, a lingering 0x000F would start CONTINUOUS mode. Either keep a
-  slim `just_completed` restart-block in firmware (status-quo semantics),
-  or make MIK drop the enable bits as part of its dose-complete handling
-  (simpler firmware, contract obligation upstairs). Decide with the MIK
-  implementation.
+- **Stale-ControlWord after dose completes: RESOLVED 2026-08-19 — firmware
+  requires a fresh command.** After a step-counted run auto-stops, RUNNING
+  will NOT re-trigger on a lingering 0x000F; it needs a new TargetSteps
+  write (or a CW enable-edge). Minimal firmware guard — a "run consumed"
+  latch cleared only by a fresh command — NOT the old just_completed dose
+  machinery, and no MIK obligation to tear down enable bits. Safe against an
+  unbounded continuous run after a dose.
 
 ## Sequencing
 

@@ -36,6 +36,14 @@ typedef struct {
 	uint32_t accel_step_n; // Step number in acceleration sequence (n in c_n formula)
 	int32_t accel_remainder;  // Carried integer division remainder for accuracy
 
+	// STEP-COUNTED MOVE: run an exact number of pulses then auto-stop.
+	// step_target_active=false → continuous jog (fields ignored, legacy path).
+	// steps_remaining is decremented by the ISR; hitting 0 with an active
+	// target forces the exact-cutoff deferred stop. Set by StartSteps (main)
+	// before the ISR is armed; touched by the ISR thereafter → volatile.
+	volatile bool step_target_active;
+	volatile uint32_t steps_remaining;
+
 	// Deferred-stop timing: ISR PWM-kill time vs. main-loop completion time
 	uint32_t phase1_timestamp;
 	uint32_t phase2_timestamp;
@@ -111,6 +119,7 @@ static void StopPWM_ConfigureGPIOSafe(void);
 
 /* Start sequence helper function --------------------------------------------*/
 static void Stepper_ConfigureAcceleration(void);
+static void Stepper_BeginMotion(void);
 
 /* Idle-check counter reset helper ------------------------------------*/
 static void Stepper_ResetIdleCounters(void);
@@ -150,6 +159,8 @@ bool Stepper_Init(void) {
 	stepper.enabled = false;
 	stepper.accel_step_n = 0;
 	stepper.accel_remainder = 0;
+	stepper.step_target_active = false;
+	stepper.steps_remaining = 0;
 
 	// Initialize PWM control
 	stepper.pwm_control.arr_value = TIMER_ARR(SPEED_NORMAL_RPM, TMC_MICROSTEP);
@@ -219,6 +230,8 @@ void Stepper_Disable(void) {
 	// Stop any ongoing movement
 	Stepper_StopPWM();
 	stepper.state = STEPPER_IDLE;
+	stepper.step_target_active = false;  // cancel any step-counted move
+	stepper.steps_remaining = 0;
 
 	// Disable driver
 	HAL_GPIO_WritePin(STEPPER_ENABLE_PORT, STEPPER_ENABLE_PIN, GPIO_PIN_SET); // Active low
@@ -250,6 +263,8 @@ void Stepper_Stop(void) {
 	DBG_PRINT_V(STEPPER, "PWM stopped");
 
 	stepper.state = STEPPER_IDLE;
+	stepper.step_target_active = false;  // cancel any step-counted move
+	stepper.steps_remaining = 0;
 
 	DBG_PRINT_V(STEPPER, "State cleared to IDLE");
 
@@ -282,6 +297,11 @@ void Stepper_NormalStop(void) {
 	if (stepper.state != STEPPER_RUNNING) {
 		return;
 	}
+
+	// A graceful stop cancels any step-counted move — the exact-cutoff logic no
+	// longer owns the stop, so let the normal decel path end it. (Pause/resume
+	// that PRESERVES steps_remaining is a motor_control-layer concern, not here.)
+	stepper.step_target_active = false;
 
 	DBG_PRINT(STEPPER, "NormalStop starting from ARR=%lu", stepper.current_arr);
 
@@ -366,7 +386,34 @@ uint16_t Stepper_GetSpeedRPM(void) {
 }
 
 /**
- * @brief Start continuous movement (jog mode)
+ * @brief Common start sequence for jog and step-counted moves
+ * @note  Caller must set the run mode (step_target_active / steps_remaining)
+ *        FIRST and have verified STEPPER_IDLE. This is the exact body the
+ *        validated StartJog used to inline.
+ */
+static void Stepper_BeginMotion(void) {
+	// Clear any stale stop_pending flag from a previous deferred stop.
+	// Race: if Stepper_Poll() hasn't run yet after a NormalStop, a leftover
+	// stop_pending would immediately re-stop on the next Poll() cycle (seen as
+	// rapid start-stop-start oscillation / CW-CCW hunting).
+	stepper.stop_pending = false;
+
+	// Auto-enable motor if not enabled
+	if (!stepper.enabled) {
+		Stepper_Enable();
+	}
+
+	stepper.state = STEPPER_RUNNING;
+
+	// Configure acceleration profile (ARR calculation + low-speed bypass logic)
+	Stepper_ConfigureAcceleration();
+	Stepper_UpdatePWM();
+	// Start PWM
+	Stepper_StartPWM();
+}
+
+/**
+ * @brief Start continuous movement (jog mode) — runs until stopped elsewhere
  */
 void Stepper_StartJog(void) {
 	DBG_PRINT(STEPPER, "StartJog called - state=%d, enabled=%d", stepper.state,
@@ -379,28 +426,43 @@ void Stepper_StartJog(void) {
 		return;
 	}
 
-	// Clear any stale stop_pending flag from previous deferred stop
-	// Race condition: If Stepper_Poll() hasn't run yet after a previous NormalStop,
-	// stop_pending=true would cause immediate re-stop on next Poll() cycle after StartJog.
-	// This manifests as rapid start-stop-start oscillation visible as CW/CCW hunting.
-	stepper.stop_pending = false;
-
-	// Auto-enable motor if not enabled
-	if (!stepper.enabled) {
-		DBG_PRINT(STEPPER, "StartJog enabling motor driver");
-		Stepper_Enable();
-	}
-
-	stepper.state = STEPPER_RUNNING;
-
-	// Configure acceleration profile (ARR calculation + low-speed bypass logic)
-	Stepper_ConfigureAcceleration();
-	Stepper_UpdatePWM();
-	// Start PWM
-	Stepper_StartPWM();
+	stepper.step_target_active = false;  // continuous — no pulse target
+	stepper.steps_remaining = 0;
+	Stepper_BeginMotion();
 
 	DBG_PRINT(STEPPER, "StartJog started - target_arr=%lu, speed=%u RPM",
 			stepper.target_arr, Stepper_GetSpeedRPM());
+}
+
+/**
+ * @brief Start a step-counted move: deliver EXACTLY `count` pulses then auto-stop
+ * @note  count==0 falls through to continuous jog. The ISR decrements
+ *        steps_remaining; at 0 it forces the exact-cutoff deferred stop and
+ *        fires STEPPER_EVT_TARGET_REACHED. Set direction/speed before calling.
+ */
+void Stepper_StartSteps(uint32_t count) {
+	if (count == 0) {
+		Stepper_StartJog();  // 0 = run continuously
+		return;
+	}
+
+	DBG_PRINT(STEPPER, "StartSteps called - count=%lu, state=%d, enabled=%d",
+			count, stepper.state, stepper.enabled);
+
+	if (!initialized || stepper.state != STEPPER_IDLE) {
+		DBG_PRINT(STEPPER,
+				"StartSteps rejected - init=%d, state=%d (must be IDLE)",
+				initialized, stepper.state);
+		return;
+	}
+
+	stepper.steps_remaining = count;
+	stepper.step_target_active = true;
+	Stepper_BeginMotion();
+
+	DBG_PRINT(STEPPER,
+			"StartSteps started - count=%lu, target_arr=%lu, speed=%u RPM",
+			count, stepper.target_arr, Stepper_GetSpeedRPM());
 }
 
 /**
@@ -469,12 +531,46 @@ void Stepper_ProcessTimerUpdate(void) {
 		stepper.phase1_timestamp = HAL_GetTick();
 		stepper.stop_pending = true; // Stepper_Poll() finishes the shutdown
 		stepper.state = STEPPER_ERROR;
+		stepper.step_target_active = false;  // abort any counted move
 		stepper_pending_events |= STEPPER_EVT_ERROR;
 		return;
 	}
 
 	// Commit the move
 	stepper.current_position = next_pos;
+
+	// --- Step-counted move: decrement, brake within range, exact cutoff ------
+	if (stepper.step_target_active) {
+		if (stepper.steps_remaining > 0) {
+			stepper.steps_remaining--;
+		}
+
+		if (stepper.steps_remaining == 0) {
+			// Deliver EXACTLY the commanded pulse count. Deferred stop: the ISR
+			// kills PWM output now; Stepper_Poll() finishes the full shutdown.
+			HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+			stepper.phase1_timestamp = HAL_GetTick();
+			stepper.stop_pending = true;
+			stepper.state = STEPPER_IDLE;
+			stepper.step_target_active = false;
+			stepper_pending_events |= STEPPER_EVT_TARGET_REACHED;
+			return;
+		}
+
+		// Begin a gentle decel once within braking distance. accel_step_n is the
+		// step count the accel ramp consumed; braking takes ~the same. At low
+		// speed accel_step_n==0, so this never fires early and the move holds
+		// constant speed to the exact cutoff above (matching the validated
+		// low-speed instant-stop). The cutoff — not the ramp — ends the move.
+		if (stepper.state == STEPPER_RUNNING
+				&& stepper.steps_remaining <= stepper.accel_step_n) {
+			stepper.target_arr = stepper.current_arr * 3;
+			stepper.state = STEPPER_DECELERATING;
+			stepper.accel_step_n = stepper.accel_step_n
+					* ACCEL_RATE_RPM_PER_SEC / DECEL_RATE_RPM_PER_SEC;
+			stepper.accel_remainder = 0;
+		}
+	}
 
 	if (stepper.state == STEPPER_RUNNING
 			&& stepper.current_arr > stepper.target_arr) {
@@ -537,9 +633,13 @@ void Stepper_ProcessTimerUpdate(void) {
 			stepper.accel_step_n--;
 		}
 
-		// Check if deceleration is complete (reached target or step counter exhausted)
-		if (stepper.current_arr >= stepper.target_arr
-				|| stepper.accel_step_n == 0) {
+		// Check if deceleration is complete (reached target or step counter
+		// exhausted). For a step-counted move the exact cutoff above owns the
+		// stop — skip here so the ramp only SLOWS the motor and never ends the
+		// move early (which would short the delivered pulse count).
+		if ((stepper.current_arr >= stepper.target_arr
+				|| stepper.accel_step_n == 0)
+				&& !stepper.step_target_active) {
 			stepper.current_arr = stepper.target_arr;
 
 			// Deferred stop: kill PWM output now; Stepper_Poll() finishes the shutdown

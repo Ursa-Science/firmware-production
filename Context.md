@@ -203,13 +203,29 @@ TWO before done.
   not FAULT (only stack EMCY 0x8130 announces it); any stack EMCY latches
   gMCOConfig ER bit0 until a fault/NMT reset; A8/A9 (init-fail, TX-overflow
   fatal) are emitters with no practical injection.
-- **NEXT (as of 2026-08-12): dose-strip decisions → combined EDS regen.**
-  Fault-feedback Phase 1 is DONE (see bullet above); the path forward is:
-  settle the two open dose-plan decisions (Q4 rename-vs-relocate for
-  0x6042/0x6043 given the ml/min→steps/s unit change; who blocks stale
-  ControlWord after dose complete), then ONE Windows regen batching
-  fault Phase 2 objects (0x2500-0x2503) + the dose-strip OD change, then
-  the ~400-line dose-engine deletion + step-counter primitive.
+- **Dose-strip decisions SETTLED 2026-08-19 + step-counter primitive BUILT.**
+  Decisions: Q4 → the 4 motion quantities go to NEW manufacturer indices
+  (0x2xxx, not reused 0x6042/0x6043 — units change ml/min→steps/s; CW 0x6040
+  / SW 0x6041 stay CiA-402); stale-CW after auto-stop → firmware requires a
+  fresh command (minimal guard, no just_completed machinery, no MIK
+  obligation). Firmware: `Stepper_StartSteps(count)` added (stepper.c/h) —
+  ISR exact-cutoff at remaining==0 (pulse count exact by construction) +
+  gentle decel within braking distance + STEPPER_EVT_TARGET_REACHED; jog
+  refactored onto shared Stepper_BeginMotion; motor_control continuous start
+  now routes through Stepper_StartSteps(0). **Start path HW-confirmed
+  2026-08-19** (shares BeginMotion with the 50 ml/min jog, which runs);
+  count/cutoff logic is code-reviewed only — gdb `call` CANNOT start the
+  TIM1 PWM (inferior-call harness limit: reaches state=RUNNING but timer
+  never counts, position stuck at 0), so exact-N delivery gets real over-CAN
+  validation at OD-wiring. Stepper_SetStepRate (steps/s native) deferred to
+  OD-wiring. Plan: `docs/PUMP_DOSE_TRANSFER_PLAN.md`.
+- **NEXT: combined Windows EDS regen** — batch fault Phase 2 objects
+  (0x2500-0x2503) + the dose-strip OD change (delete 0x2200 + 0x2300-0x2305;
+  add TargetSteps/StepsRemaining + StepRate/ActualStepRate at new 0x2xxx) in
+  ONE CANopen Architect regen → propagate to both repos (firmware-production
+  + CANOpenGateway `bridge/devices/`) + bridge image rebuild → then the
+  ~400-line dose-engine deletion + wire motor_control to
+  Stepper_StartSteps(TargetSteps) + SetStepRate → revalidate.
 - **PLANNED, direction settled 2026-08-12: strip dosing engine from pump
   firmware → "dumb pump" step-counter model.** Plan: `PUMP_DOSE_TRANSFER_PLAN.md`
   (rewritten 2026-08-12). MIK owns ALL ml math + tubing calibration; pump
