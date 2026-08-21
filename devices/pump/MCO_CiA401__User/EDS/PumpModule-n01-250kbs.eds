@@ -1,5 +1,5 @@
 [FileInfo]
-FileName=E:\ursaScience\Modules\pumpModule\node-2\250kbs\PumpModule-n02-250kbs.dcf
+FileName=E:\ursaScience\Modules\pumpModule\node-1\250kbs\PumpModule-n01-250kbs.eds
 FileVersion=1
 FileRevision=0
 EDSVersion=4.0
@@ -8,9 +8,8 @@ CreatedBy=Dakota Ward
 CreationTime=11:41AM
 CreationDate=11-17-2025
 ModifiedBy=Dakota Ward
-ModificationTime=11:32AM
-ModificationDate=05-30-2026
-LastEDS=
+ModificationTime=10:47AM
+ModificationDate=08-21-2026
 
 [Comments]
 Lines=3
@@ -43,15 +42,6 @@ NrOfRXPDO=1
 NrOfTXPDO=2
 CompactPDO=0x00
 
-[DeviceCommissioning]
-NodeID=0x02
-NodeName=Pump Module
-BaudRate=0x00FA
-NetNumber=0x0000
-NetworkName=
-CANopenManager=0
-LSS_SerialNumber=0x00000000
-
 [DummyUsage]
 Dummy0001=1
 Dummy0002=1
@@ -68,7 +58,7 @@ SupportedObjects=3
 3=0x1018
 
 [OptionalObjects]
-SupportedObjects=31
+SupportedObjects=29
 1=0x1002
 2=0x1003
 3=0x1005
@@ -98,22 +88,19 @@ SupportedObjects=31
 27=0x1F80
 28=0x6040
 29=0x6041
-30=0x6042
-31=0x6043
 
 [ManufacturerObjects]
-SupportedObjects=11
+SupportedObjects=10
 1=0x2000
-2=0x2100
-3=0x2102
-4=0x2200
-5=0x2300
-6=0x2301
-7=0x2302
-8=0x2303
-9=0x2304
-10=0x2305
-11=0x2400
+2=0x2400
+3=0x2500
+4=0x2501
+5=0x2502
+6=0x2503
+7=0x2600
+8=0x2601
+9=0x2602
+10=0x2603
 
 [1000]
 ParameterName=Device Type
@@ -125,8 +112,6 @@ AccessType=ro
 DefaultValue=0x00020192
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [1001]
 ParameterName=Error Register
@@ -138,8 +123,6 @@ AccessType=const
 DefaultValue=
 PDOMapping=1
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [1002]
 ParameterName=Manufacturer Status Register
@@ -151,8 +134,6 @@ AccessType=ro
 DefaultValue=
 PDOMapping=1
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [1003]
 ParameterName=Pre-defined Error Field
@@ -167,8 +148,6 @@ AccessType=rw
 DefaultValue=0x00
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Number of Errors
 
 [1003sub1]
@@ -179,8 +158,6 @@ AccessType=ro
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Standard Error Field 1
 ObjectType=0x07
 
@@ -192,8 +169,6 @@ AccessType=ro
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Standard Error Field 2
 ObjectType=0x07
 
@@ -205,8 +180,6 @@ AccessType=ro
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Standard Error Field 3
 ObjectType=0x07
 
@@ -218,8 +191,6 @@ AccessType=ro
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Standard Error Field 4
 ObjectType=0x07
 
@@ -233,8 +204,6 @@ AccessType=const
 DefaultValue=0x00000080
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [1006]
 ParameterName=Communication Cycle Period
@@ -246,8 +215,6 @@ AccessType=rw
 DefaultValue=100000
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [1007]
 ParameterName=Synchronous Window Length
@@ -259,8 +226,6 @@ AccessType=rw
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [1008]
 ParameterName=Manufacturer Device Name
@@ -272,8 +237,6 @@ AccessType=ro
 DefaultValue=Pump Module
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [1009]
 ParameterName=Manufacturer Hardware Version
@@ -285,8 +248,6 @@ AccessType=ro
 DefaultValue=1.0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [100A]
 ParameterName=Manufacturer Software Version
@@ -298,8 +259,6 @@ AccessType=ro
 DefaultValue=1.0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [1010]
 ParameterName=Store Parameters
@@ -314,8 +273,6 @@ AccessType=const
 DefaultValue=0x04
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Number of Entries
 
 [1010sub1]
@@ -326,8 +283,6 @@ AccessType=ro
 DefaultValue=
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Save All Parameters
 ObjectType=0x07
 
@@ -339,8 +294,6 @@ AccessType=ro
 DefaultValue=
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Save Communication Parameters
 ObjectType=0x07
 
@@ -352,8 +305,6 @@ AccessType=ro
 DefaultValue=
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Save Application Parameters
 ObjectType=0x07
 
@@ -365,8 +316,6 @@ AccessType=ro
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Save Manufacturer Defined Parameters 1
 ObjectType=0x07
 
@@ -383,8 +332,6 @@ AccessType=const
 DefaultValue=0x04
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Number of Entries
 
 [1011sub1]
@@ -395,8 +342,6 @@ AccessType=ro
 DefaultValue=
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Restore All Parameters
 ObjectType=0x07
 
@@ -408,8 +353,6 @@ AccessType=ro
 DefaultValue=
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Restore Communication Parameters
 ObjectType=0x07
 
@@ -421,8 +364,6 @@ AccessType=ro
 DefaultValue=
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Restore Application Parameters
 ObjectType=0x07
 
@@ -434,8 +375,6 @@ AccessType=ro
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Restore Manufacturer Defined Parameters 1
 ObjectType=0x07
 
@@ -449,8 +388,6 @@ AccessType=rw
 DefaultValue=0x00000100
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [1013]
 ParameterName=High Resolution Time Stamp
@@ -462,8 +399,6 @@ AccessType=ro
 DefaultValue=0
 PDOMapping=1
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [1014]
 ParameterName=Emergency COB-ID
@@ -475,8 +410,6 @@ AccessType=const
 DefaultValue=$NODEID+0x00000080
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [1015]
 ParameterName=Emergency Inhibit Time
@@ -488,8 +421,6 @@ AccessType=rw
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [1016]
 ParameterName=Consumer Heartbeat Time
@@ -504,8 +435,6 @@ AccessType=const
 DefaultValue=0x04
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Number of Entries
 
 [1016sub1]
@@ -516,8 +445,6 @@ AccessType=rw
 DefaultValue=
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Consumer Heartbeat Time 1
 ObjectType=0x07
 
@@ -529,8 +456,6 @@ AccessType=rw
 DefaultValue=
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Consumer Heartbeat Time 2
 ObjectType=0x07
 
@@ -542,8 +467,6 @@ AccessType=rw
 DefaultValue=
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Consumer Heartbeat Time 3
 ObjectType=0x07
 
@@ -555,8 +478,6 @@ AccessType=rw
 DefaultValue=
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Consumer Heartbeat Time 4
 ObjectType=0x07
 
@@ -570,8 +491,6 @@ AccessType=rw
 DefaultValue=1000
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [1018]
 ParameterName=Identity
@@ -586,8 +505,6 @@ AccessType=const
 DefaultValue=0x04
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Number of Entries
 
 [1018sub1]
@@ -598,8 +515,6 @@ AccessType=ro
 DefaultValue=0x00000123
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Vendor ID
 ObjectType=0x07
 
@@ -611,8 +526,6 @@ AccessType=ro
 DefaultValue=0x00000003
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Product Code
 ObjectType=0x07
 
@@ -624,8 +537,6 @@ AccessType=ro
 DefaultValue=0x00010001
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Revision Number
 ObjectType=0x07
 
@@ -637,8 +548,6 @@ AccessType=ro
 DefaultValue=0x123456
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Serial Number
 ObjectType=0x07
 
@@ -652,8 +561,6 @@ AccessType=rw
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [1020]
 ParameterName=Verify Configuration
@@ -668,8 +575,6 @@ AccessType=const
 DefaultValue=0x02
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Number of Entries
 
 [1020sub1]
@@ -680,8 +585,6 @@ AccessType=rw
 DefaultValue=
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Configuration Date
 ObjectType=0x07
 
@@ -693,8 +596,6 @@ AccessType=rw
 DefaultValue=
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Configuration Time
 ObjectType=0x07
 
@@ -711,8 +612,6 @@ AccessType=const
 DefaultValue=0x04
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Number of Consumed Emergency Objects
 
 [1028sub1]
@@ -723,8 +622,6 @@ AccessType=const
 DefaultValue=
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Emergency Consumer 1
 ObjectType=0x07
 
@@ -736,8 +633,6 @@ AccessType=const
 DefaultValue=
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Emergency Consumer 2
 ObjectType=0x07
 
@@ -749,8 +644,6 @@ AccessType=const
 DefaultValue=
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Emergency Consumer 3
 ObjectType=0x07
 
@@ -762,8 +655,6 @@ AccessType=const
 DefaultValue=
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Emergency Consumer 4
 ObjectType=0x07
 
@@ -780,8 +671,6 @@ AccessType=const
 DefaultValue=0x02
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Number of entries
 
 [1200sub1]
@@ -792,8 +681,6 @@ AccessType=ro
 DefaultValue=$NODEID+0x00000600
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=COB-ID Client to Server
 ObjectType=0x07
 
@@ -805,8 +692,6 @@ AccessType=ro
 DefaultValue=$NODEID+0x00000580
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=COB-ID Server to Client
 ObjectType=0x07
 
@@ -823,8 +708,6 @@ AccessType=const
 DefaultValue=0x05
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Highest Subindex Supported
 
 [1400sub1]
@@ -835,8 +718,6 @@ AccessType=rw
 DefaultValue=$NODEID+0x00000200
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=COB ID used by PDO
 ObjectType=0x07
 
@@ -848,8 +729,6 @@ AccessType=rw
 DefaultValue=1
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Transmission Type
 ObjectType=0x07
 
@@ -861,8 +740,6 @@ AccessType=rw
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Inhibit Time
 ObjectType=0x07
 
@@ -874,14 +751,12 @@ AccessType=rw
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Event Timer
 ObjectType=0x07
 
 [1600]
 ParameterName=Receive PDO 1 Mapping
-SubNumber=3
+SubNumber=4
 ObjectType=0x09
 
 [1600sub0]
@@ -889,11 +764,9 @@ DataType=0x0005
 LowLimit=
 HighLimit=
 AccessType=const
-DefaultValue=0x02
+DefaultValue=0x03
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Number of Entries
 
 [1600sub1]
@@ -904,8 +777,6 @@ AccessType=rw
 DefaultValue=0x60400010
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=ControlWord
 ObjectType=0x07
 
@@ -914,12 +785,21 @@ DataType=0x0007
 LowLimit=
 HighLimit=
 AccessType=rw
-DefaultValue=0x60420010
+DefaultValue=0x26000010
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
-ParameterName=TargetFlowRate
+ParameterName=StepRate
+ObjectType=0x07
+
+[1600sub3]
+DataType=0x0007
+LowLimit=
+HighLimit=
+AccessType=rw
+DefaultValue=0x26010020
+PDOMapping=0
+ObjFlags=0x00
+ParameterName=TargetSteps
 ObjectType=0x07
 
 [1800]
@@ -935,8 +815,6 @@ AccessType=const
 DefaultValue=0x06
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Highest Subindex Supported
 
 [1800sub1]
@@ -947,8 +825,6 @@ AccessType=rw
 DefaultValue=$NODEID+0x00000180
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=COB ID used by PDO
 ObjectType=0x07
 
@@ -960,8 +836,6 @@ AccessType=rw
 DefaultValue=1
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Transmission Type
 ObjectType=0x07
 
@@ -973,8 +847,6 @@ AccessType=rw
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Inhibit Time
 ObjectType=0x07
 
@@ -986,8 +858,6 @@ AccessType=rw
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Event Timer
 ObjectType=0x07
 
@@ -999,8 +869,6 @@ AccessType=rw
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Sync Start Value
 ObjectType=0x07
 
@@ -1017,8 +885,6 @@ AccessType=const
 DefaultValue=0x06
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Highest Subindex Supported
 
 [1801sub1]
@@ -1029,8 +895,6 @@ AccessType=rw
 DefaultValue=$NODEID+0x00000280
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=COB ID used by PDO
 ObjectType=0x07
 
@@ -1042,8 +906,6 @@ AccessType=rw
 DefaultValue=1
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Transmission Type
 ObjectType=0x07
 
@@ -1055,8 +917,6 @@ AccessType=rw
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Inhibit Time
 ObjectType=0x07
 
@@ -1068,8 +928,6 @@ AccessType=rw
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Event Timer
 ObjectType=0x07
 
@@ -1081,8 +939,6 @@ AccessType=rw
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Sync Start Value
 ObjectType=0x07
 
@@ -1099,8 +955,6 @@ AccessType=const
 DefaultValue=0x02
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Number of Entries
 
 [1A00sub1]
@@ -1111,8 +965,6 @@ AccessType=ro
 DefaultValue=0x60410010
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Status Word
 ObjectType=0x07
 
@@ -1121,12 +973,10 @@ DataType=0x0007
 LowLimit=
 HighLimit=
 AccessType=ro
-DefaultValue=0x60430010
+DefaultValue=0x26020010
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
-ParameterName=ActualFlowRate
+ParameterName=ActualStepRate
 ObjectType=0x07
 
 [1A01]
@@ -1142,8 +992,6 @@ AccessType=const
 DefaultValue=0x03
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Number of Entries
 
 [1A01sub1]
@@ -1154,8 +1002,6 @@ AccessType=rw
 DefaultValue=0x24000008
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=Pump State
 ObjectType=0x07
 
@@ -1167,8 +1013,6 @@ AccessType=rw
 DefaultValue=0x10010008
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 ParameterName=ErrorRegister
 ObjectType=0x07
 
@@ -1177,12 +1021,10 @@ DataType=0x0007
 LowLimit=
 HighLimit=
 AccessType=rw
-DefaultValue=0x23040020
+DefaultValue=0x26030020
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
-ParameterName=DoseDelivered
+ParameterName=StepsRemaining
 ObjectType=0x07
 
 [1F80]
@@ -1195,8 +1037,6 @@ AccessType=const
 DefaultValue=0x00000004
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [2000]
 ParameterName=LEDControl
@@ -1208,125 +1048,6 @@ AccessType=rw
 DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[2100]
-ParameterName=MaxFlowRate
-ObjectType=0x07
-DataType=0x0006
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=200
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[2102]
-ParameterName=EmergencyStopState
-ObjectType=0x07
-DataType=0x0001
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=1.0
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[2200]
-ParameterName=FlowCorrectionFactor
-ObjectType=0x07
-DataType=0x0008
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=1.1765
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[2300]
-ParameterName=DoseVolume
-ObjectType=0x07
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=0
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[2301]
-ParameterName=DoseFlowRate
-ObjectType=0x07
-DataType=0x0003
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=100
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[2302]
-ParameterName=DoseCommand
-ObjectType=0x07
-DataType=0x0005
-LowLimit=
-HighLimit=
-AccessType=wo
-DefaultValue=
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[2303]
-ParameterName=DoseStatus
-ObjectType=0x07
-DataType=0x0005
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=0
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[2304]
-ParameterName=DoseDelivered
-ObjectType=0x07
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=0
-PDOMapping=1
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[2305]
-ParameterName=DoseTimeout
-ObjectType=0x07
-DataType=0x0006
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=300
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [2400]
 ParameterName=PumpState
@@ -1338,8 +1059,94 @@ AccessType=ro
 DefaultValue=1
 PDOMapping=1
 ObjFlags=0x00
-ParameterValue=
-Denotation=
+
+[2500]
+ParameterName=TMCInitStatus
+ObjectType=0x07
+DataType=0x0005
+LowLimit=
+HighLimit=
+AccessType=ro
+DefaultValue=0
+PDOMapping=0
+ObjFlags=0x00
+
+[2501]
+ParameterName=TMCInitFailedStep
+ObjectType=0x07
+DataType=0x0005
+LowLimit=
+HighLimit=
+AccessType=ro
+DefaultValue=0
+PDOMapping=0
+ObjFlags=0x00
+
+[2502]
+ParameterName=LastDrvStatus
+ObjectType=0x07
+DataType=0x0007
+LowLimit=
+HighLimit=
+AccessType=ro
+DefaultValue=0
+PDOMapping=0
+ObjFlags=0x00
+
+[2503]
+ParameterName=FaultSource
+ObjectType=0x07
+DataType=0x0007
+LowLimit=0
+HighLimit=6
+AccessType=ro
+DefaultValue=0
+PDOMapping=0
+ObjFlags=0x00
+
+[2600]
+ParameterName=StepRate
+ObjectType=0x07
+DataType=0x0003
+LowLimit=
+HighLimit=
+AccessType=rww
+DefaultValue=0
+PDOMapping=1
+ObjFlags=0x00
+
+[2601]
+ParameterName=TargetSteps
+ObjectType=0x07
+DataType=0x0007
+LowLimit=0
+HighLimit=
+AccessType=rww
+DefaultValue=0
+PDOMapping=1
+ObjFlags=0x00
+
+[2602]
+ParameterName=ActualStepRate
+ObjectType=0x07
+DataType=0x0003
+LowLimit=
+HighLimit=
+AccessType=ro
+DefaultValue=0
+PDOMapping=1
+ObjFlags=0x00
+
+[2603]
+ParameterName=StepsRemaining
+ObjectType=0x07
+DataType=0x0007
+LowLimit=
+HighLimit=
+AccessType=ro
+DefaultValue=0
+PDOMapping=1
+ObjFlags=0x00
 
 [6040]
 ParameterName=ControlWord
@@ -1351,8 +1158,6 @@ AccessType=rww
 DefaultValue=0
 PDOMapping=1
 ObjFlags=0x00
-ParameterValue=
-Denotation=
 
 [6041]
 ParameterName=StatusWord
@@ -1364,32 +1169,4 @@ AccessType=ro
 DefaultValue=0x0040
 PDOMapping=1
 ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[6042]
-ParameterName=TargetFlowRate
-ObjectType=0x07
-DataType=0x0003
-LowLimit=
-HighLimit=
-AccessType=rww
-DefaultValue=0
-PDOMapping=1
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[6043]
-ParameterName=ActualFlowRate
-ObjectType=0x07
-DataType=0x0003
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=0
-PDOMapping=1
-ObjFlags=0x00
-ParameterValue=
-Denotation=
 
