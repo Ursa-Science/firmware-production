@@ -133,6 +133,14 @@ NOTE:    This function normally calls MCO_DefaultResetCommunication().
 RETURNS: FALSE, if initialization was not successful
          TRUE, if initialization was successful
 **************************************************************************/
+/* Runaway backstop: monitor the master's heartbeat. If it stops (gateway/MIK
+ * gone) mid continuous-jog, MCOUSER_HeartbeatLost() e-stops the motor and drops
+ * the node to PRE-OP. Dosed runs self-terminate, so this only guards open-ended
+ * jogs. Armed here (not via the 0x1016 OD default) so the failsafe is
+ * self-contained in firmware and re-arms on every comm reset. */
+#define MASTER_HB_NODE_ID     127u   // master/MIK node ID (produces a 1 s heartbeat)
+#define MASTER_HB_TIMEOUT_MS  2500u  // 2.5x the 1 s beat: tolerates ~1 dropped HB + jitter
+
 uint8_t MCOUSER_ResetCommunication (void)
 {
   uint8_t result;
@@ -143,6 +151,15 @@ uint8_t MCOUSER_ResetCommunication (void)
 #else
   result = MCO_DefaultResetCommunication(NODEID,CAN_BITRATE,CAN_BRS_BITRATE,DEFAULT_HEARTBEAT);
 #endif
+
+  /* Arm the heartbeat consumer AFTER MCO_DefaultResetCommunication (its
+   * MCO_UpdateSystemFromOD would otherwise clobber this from the empty 0x1016
+   * OD default). Consumer sits in HBCONS_INIT until it sees the master's first
+   * heartbeat, so this never false-trips at boot before the master is up. */
+  if (result)
+  {
+    MCOP_InitHBConsumer(1, MASTER_HB_NODE_ID, MASTER_HB_TIMEOUT_MS);
+  }
 
 	// Fire event — motor control handles its own initialization
 	MCO_Event_t ev = { .type = MCO_EVENT_COMM_RESET, .init_result = result };
