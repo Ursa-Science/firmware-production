@@ -300,10 +300,22 @@ TWO before done.
   (ARR 1249>700) = no decel loss. Guard re-fired at dose-2 end. Quick-stop-
   during-jog + QS-recovery also re-validated clean. **DOSE-STRIP FIRMWARE IS
   NOW HW-VALIDATED end-to-end** (continuous, stops, disable, NMT, counted
-  exact-N, run-consumed guard, pause/resume, CW-edge re-arm). Still
-  uncommitted. REMAINING: commit; Q3 heartbeat-lost runaway (needs HB consumer
-  armed — separate); optional high-rate decel-caveat test; then propagate EDS
-  to CANOpenGateway bridge/devices + bridge rebuild + MIK brief.
+  exact-N, run-consumed guard, pause/resume, CW-edge re-arm). COMMITTED +
+  merged to main + pushed (19b0ede EDS, 1f89a6f firmware). EDS/DCF propagated
+  to the gateway repo by Dakota.
+- **Q3 heartbeat-lost runaway — RESOLVED + HW-VALIDATED 2026-08-21.** Consumer
+  armed in MCOUSER_ResetCommunication (user_STM32.c): MCOP_InitHBConsumer(1,
+  127, 2500) — watch master node 127's 1 s HB, 2500 ms timeout. Armed in
+  firmware (not 0x1016 OD default → no regen; re-arms every comm reset).
+  Reaction (already wired): MCOUSER_HeartbeatLost → EmergencyStop (estop +
+  de-energize) → PRE-OP. ABORT-NOW chosen (mid-dose HB-loss aborts, partial
+  volume) — motion-state based so it covers jog AND dose; revisit "let bounded
+  dose finish" later if needed. Bench: jog + send cyclic 0x77F (node-127 HB)
+  then stop it → pump estops + PRE-OP within timeout; confirmed NO false trip
+  before first HB seen (consumer sits in HBCONS_INIT until active). Committed
+  on branch pump-heartbeat-guard. REMAINING: optional high-rate decel-caveat
+  test; propagate this firmware change awareness to MIK (master must keep its
+  1 s HB up while commanding motion).
 - **NEXT (needs hardware/bench):** node ID settled (node 1, accepted).
   (5) flash the node-1 image; validate
   step-exact dose over CAN (deferred count test — the ONLY unproven path,
