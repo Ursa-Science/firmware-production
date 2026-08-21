@@ -32,23 +32,14 @@ extern TIM_HandleTypeDef htim4;  // Green LED - TIM4 CH1
 
 // 17HS19-2004S1 NEMA 17, DIRECT DRIVE (no gearbox): timer pulses per pump
 // revolution. Derived from the single microstep knob (TMC_MICROSTEP in
-// tmc2209_uart.h) so re-tuning the resolution keeps all dosing math
-// consistent automatically. At the default 1/8: 200 × 8 = 1600 pulses/rev —
-// numerically identical to the WPX-1's 200 motor steps × 8 gearbox.
-// Each timer pulse = 1 microstep.
+// tmc2209_uart.h). At the default 1/8: 200 × 8 = 1600 pulses/rev — numerically
+// identical to the WPX-1's 200 motor steps × 8 gearbox. Each timer pulse = 1
+// microstep. Used only for the native steps/s ↔ RPM conversion below (a pure
+// mechanical relation — NO ml/calibration math lives in the pump any more;
+// the MIK owns all ml arithmetic and tubing calibration).
 #define STEPS_PER_REV           (STEPPER_STEPS_PER_REV * TMC_MICROSTEP)
 
-// Calibration Constants
-// BASE_STEPS_PER_ML: from the head's displacement — 100 ml/min @ 90 RPM, i.e.
-// 0.9 rev per ml: (90 RPM * STEPS_PER_REV) / 100 ml/min = 0.9 * STEPS_PER_REV
-// (= 1440.0f exactly at the default 1/8 — the 9/10 integer form avoids the
-// 0.9f rounding error). Scales with TMC_MICROSTEP by construction. NOTE: only
-// valid while the same pump head displaces the same ml/rev. Re-derive from
-// the catch test; fine trim belongs in the front end via
-// FlowCorrectionFactor (OD 0x2200), not baked in here.
-#define BASE_STEPS_PER_ML       ((float) (STEPS_PER_REV * 9) / 10.0f)
-
-// Speed ceiling is enforced by mlPerMin_to_rpm() clamping to
+// Speed ceiling is enforced by stepRate_to_rpm() clamping to
 // STEPPER_MAX_SPEED_RPM (stepper.h) — no separate limit here.
 
 // CiA 402 ControlWord bits (0x6040) - DS402 Standard Mapping
@@ -56,7 +47,7 @@ extern TIM_HandleTypeDef htim4;  // Green LED - TIM4 CH1
 #define CONTROLWORD_ENABLE_VOLTAGE  (1 << 1)  // Bit 1: Enable Voltage
 #define CONTROLWORD_QUICKSTOP       (1 << 2)  // Bit 2: Quick Stop (ACTIVE LOW - 0=stop active, 1=normal)
 #define CONTROLWORD_ENABLE_OP       (1 << 3)  // Bit 3: Enable Operation (permit motion)
-#define CONTROLWORD_LAST_KNOWN_FLOWRATE (1 << 4)  // Bit 4: Use last known flow rate (manufacturer-specific)
+#define CONTROLWORD_LAST_KNOWN_RATE (1 << 4)  // Bit 4: Use last known StepRate (manufacturer-specific)
 #define CONTROLWORD_FAULT_RESET     (1 << 7)  // Bit 7: Fault Reset
 #define CONTROLWORD_HALT            (1 << 8)  // Bit 8: Halt (temporary pause)
 
@@ -120,53 +111,39 @@ extern TIM_HandleTypeDef htim4;  // Green LED - TIM4 CH1
 #define FAULT_SRC_TMC_COMM      0x05  // TMC DIAG latched but DRV_STATUS unreadable
 #define FAULT_SRC_DIAG_UNKNOWN  0x06  // TMC DIAG latched, no cause flag set
 
-// Dose status values (0x2303)
-#define DOSE_STATUS_IDLE        0x00
-#define DOSE_STATUS_RUNNING     0x01
-#define DOSE_STATUS_COMPLETE    0x02
-#define DOSE_STATUS_TIMEOUT     0x03
-#define DOSE_STATUS_ABORTED     0x04
-#define DOSE_STATUS_ERROR       0x05
 /* Private typedef -----------------------------------------------------------*/
-
-/**
- * @brief Dose tracking structure for latched parameter approach
- * @note Parameters are latched at START command when DoseVolume > 0
- */
-typedef struct {
-	uint32_t target_volume_ml;      // DoseVolume (ml × 1000)
-	int16_t flow_rate_ml_min;       // DoseFlowRate (signed for bidirection)
-	uint16_t timeout_sec;           // DoseTimeout (seconds)
-	bool dose_active;               // true when dose is running
-	uint32_t start_time_ms;         // HAL_GetTick() at start
-	int32_t start_position;         // Stepper position at start
-	uint32_t delivered_ml;          // Current progress (ml × 1000)
-
-	// HALT/Resume pause tracking
-	uint32_t pause_start_ms; // HAL_GetTick() when HALT started (0 = not paused)
-	uint32_t total_pause_ms;        // Cumulative pause time in milliseconds
-
-	// Dose completion tracking for restart blocking
-	uint8_t just_completed; // Blocks restart with stale ControlWord after dose ends
-	int16_t flow_rate_at_completion;  // Tracks flow rate for change detection
-} DoseTracker_t;
 
 typedef struct {
 	bool initialized;
 	uint32_t last_update;
 	uint16_t last_control_word;
-	int16_t target_flow_ml_min;
+	int16_t target_step_rate;  // signed µsteps/sec (sign = direction), from 0x2600
 
 	// State machine (prevents duplicate command execution in RPDO mode)
 	MotorState_t current_state;
-	
+
 	// State tracking
 	uint8_t pump_state;
 	bool fault_active;
 	uint8_t error_register;  // cause-coded 0x1001 value, set/cleared at fault entry/exit
 
-	// Dose tracking (latched parameters approach)
-	DoseTracker_t dose_tracker;
+	// Stale-ControlWord guard: a step-counted move that auto-stopped will NOT
+	// re-trigger RUNNING on a lingering 0x000F. Set true on TARGET_REACHED,
+	// cleared by a ControlWord edge (a fresh run command). NOT keyed off
+	// TargetSteps — RPDO1 is synchronous so the stack re-applies the buffered
+	// TargetSteps every SYNC, which could never signal "fresh."
+	bool run_consumed;
+
+	// Pause/resume (workflow D): a HALT during a step-counted move consumed
+	// TargetSteps to 0 at latch, so resume must NOT re-read the OD (that would
+	// start an unbounded jog). Captured from Stepper_GetStepsRemaining() at
+	// pause; on resume the move restarts with exactly this count. 0 = no paused
+	// counted move (fresh start or continuous jog).
+	// NOTE: capture is at pause-initiation; any decel steps physically emitted
+	// while the motor ramps down are not re-counted, so at HIGH step rates a
+	// paused/resumed dose can slightly over-deliver (~ramp length). Exact at the
+	// low dosing rates that use the instant-stop bypass. See PUMP_DOSE_TRANSFER_PLAN.
+	uint32_t paused_steps_remaining;
 
 } MotorControl_t;
 
@@ -177,19 +154,18 @@ static MotorControl_t motor_ctrl = { 0 };
  * Debug-log statistic only — repeated transients suggest supply/EMI trouble. */
 static uint32_t diag_transient_count = 0;
 
-// CiA 402 Compliance: Last known TargetFlowRate to persist across state transitions
-// This static variable maintains the last received TargetFlowRate value, allowing
-// the motor to resume at the correct speed after halt or quick stop operations
-// when master sets CONTROLWORD_LAST_KNOWN_FLOWRATE (bit 4).
-// BEHAVIOR CHANGE: When bit 4 = 0 (normal mode), TargetFlowRate from RPDO is used directly
-//                  When bit 4 = 1 (last known mode), this stored value is used instead
-static int16_t last_known_target_flow_ml_min = 0;
+// CiA 402 Compliance: last known StepRate, persisted across state transitions so
+// the motor resumes at the correct rate after halt/quick-stop when the master
+// sets CONTROLWORD_LAST_KNOWN_RATE (bit 4).
+//   Bit 4 = 0 (normal): StepRate from RPDO is used directly (zero means stop)
+//   Bit 4 = 1 (last known): this stored value is used instead of the RPDO value
+static int16_t last_known_step_rate = 0;
 
 // one-shot log flags (prevents UART ring-buffer flooding)
 // Each flag is reset at its own semantic point — NOT a blanket "reset all".
 // See LogOnceFlags_t members for ownership comments.
 typedef struct {
-	bool dose_blocking;   // CheckTransitionBlocking / HandleDoseCompletionFlags
+	bool run_blocking; // CheckTransitionBlocking (run consumed, stale ControlWord)
 	bool holding; // HandleQuickStopRecovery (quickstop complete, bit still active)
 	bool waiting;          // HandleQuickStopRecovery (motor still decelerating)
 	bool decel_blocking; // CheckTransitionBlocking (stepper still decelerating)
@@ -198,14 +174,13 @@ typedef struct {
 static LogOnceFlags_t log_once = { 0 };
 
 /* Private function prototypes -----------------------------------------------*/
-static uint16_t mlPerMin_to_rpm(uint16_t ml_per_min);
-static uint16_t rpm_to_mlPerMin(uint16_t rpm);
+static uint16_t stepRate_to_rpm(uint16_t steps_per_sec);
+static uint16_t rpm_to_stepRate(uint16_t rpm);
 static void MotorControl_ProcessControlWord(uint16_t control_word);
 static bool HandleFaultReset(uint16_t rising_edges);
 static bool HandleQuickStop(uint16_t falling_edges, uint16_t control_word);
 static bool HandleQuickStopRecovery(uint16_t control_word);
 static MotorState_t DetermineTargetState(uint16_t control_word);
-static void HandleDoseCompletionFlags(uint16_t control_word);
 static bool CheckTransitionBlocking(MotorState_t target_state,
 		uint16_t control_word);
 static void ExecuteExitActions(MotorState_t target_state);
@@ -213,7 +188,6 @@ static void ExecuteEntryActions(MotorState_t target_state);
 static void MotorControl_EnterFault(bool diag_latched);
 static uint16_t MotorControl_GenerateStatusWord(void);
 static void MotorControl_UpdateProcessImage(void);
-static void MotorControl_CheckDoseProgress(void);
 static void MotorControl_ProcessStepperEvents(void);
 static void MotorControl_PrintStatus(void);
 static void MotorControl_PrintTimerStats(void);
@@ -230,8 +204,8 @@ static void MotorControl_PrintDiagnostics(void);
  *        EMCY frame's ER byte (mcop.c) are served from
  *        gMCOConfig.error_register. The Phase 0a bench proved they disagree
  *        unless BOTH are written — so both are written here.
- * @note  Caller keeps responsibility for stopping/de-energizing the stepper
- *        and aborting any dose; this function only classifies and reports.
+ * @note  Caller keeps responsibility for stopping/de-energizing the stepper;
+ *        this function only classifies and reports.
  */
 static void MotorControl_EnterFault(bool diag_latched) {
 	uint16_t emcy_code = EMCY_CODE_GENERIC;
@@ -269,7 +243,14 @@ static void MotorControl_EnterFault(bool diag_latched) {
 	motor_ctrl.pump_state = PUMPSTATE_FAULT;
 	motor_ctrl.fault_active = true;
 	motor_ctrl.error_register = error_reg;
+	motor_ctrl.paused_steps_remaining = 0;  // any in-flight counted move is void
 	gMCOConfig.error_register |= error_reg;
+
+	/* Fault-feedback Phase 2: latch the DRV_STATUS snapshot + source into the
+	 * SDO-only diagnostics 0x2502/0x2503 so a master can read the last fault
+	 * cause off the bus without catching the EMCY frame live. Cleared on reset. */
+	ProcImg_SetLastDrvStatus(drv_status);
+	ProcImg_SetFaultSource(source);
 
 	/* Event-driven EMCY — reaches the master even with SYNC off. Payload:
 	 * error code + ER (stack inserts it) + DRV_STATUS snapshot (LE) + source. */
@@ -293,17 +274,27 @@ static void MotorControl_ProcessStepperEvents(void) {
 		return;
 	}
 
-	if (events & STEPPER_EVT_STOPPED) {
+	if (events & (STEPPER_EVT_STOPPED | STEPPER_EVT_TARGET_REACHED)) {
+		// TARGET_REACHED (step-counted move delivered its exact pulse count) is
+		// handled like a normal STOPPED: settle into ENABLED_STOPPED. The extra
+		// step is the run-consumed latch — a lingering 0x000F ControlWord must
+		// NOT restart the move; only a fresh command (new TargetSteps or a CW
+		// change) re-arms RUNNING (see CheckTransitionBlocking).
 		if (motor_ctrl.current_state == MOTOR_STATE_RUNNING
 				|| motor_ctrl.current_state == MOTOR_STATE_QUICKSTOPPING) {
 			DBG_STATE(MOTOR,
-					"Stepper STOPPED event → transitioning to ENABLED_STOPPED");
+					"Stepper %s event → transitioning to ENABLED_STOPPED",
+					(events & STEPPER_EVT_TARGET_REACHED) ?
+							"TARGET_REACHED" : "STOPPED");
 			motor_ctrl.current_state = MOTOR_STATE_ENABLED_STOPPED;
 			if (ProcImg_GetControlWord() & CONTROLWORD_HALT) {
 				motor_ctrl.pump_state = PUMPSTATE_HALT;
 			} else {
 				motor_ctrl.pump_state = PUMPSTATE_STOPPED;
 			}
+		}
+		if (events & STEPPER_EVT_TARGET_REACHED) {
+			motor_ctrl.run_consumed = true;
 		}
 	}
 
@@ -314,17 +305,6 @@ static void MotorControl_ProcessStepperEvents(void) {
 	if (events & STEPPER_EVT_ERROR) {
 		DBG_ERROR(MOTOR, "Stepper ERROR event → entering FAULT state");
 		MotorControl_EnterFault(false);
-
-		// Abort dose if active
-		if (motor_ctrl.dose_tracker.dose_active) {
-			DBG_STATE(DOSE,
-					"Stepper error aborted dose at %lu.%03lu ml of %lu.%03lu ml",
-					motor_ctrl.dose_tracker.delivered_ml / 1000,
-					motor_ctrl.dose_tracker.delivered_ml % 1000,
-					motor_ctrl.dose_tracker.target_volume_ml / 1000,
-					motor_ctrl.dose_tracker.target_volume_ml % 1000);
-			motor_ctrl.dose_tracker.dose_active = false;
-		}
 	}
 
 	if (events & STEPPER_EVT_DRV_FAULT) {
@@ -338,16 +318,6 @@ static void MotorControl_ProcessStepperEvents(void) {
 			DBG_ERROR(MOTOR,
 					"TMC2209 DIAG latched HIGH (short/overtemp) → FAULT, driver disabled");
 			MotorControl_EnterFault(true);
-
-			if (motor_ctrl.dose_tracker.dose_active) {
-				DBG_STATE(DOSE,
-						"Driver fault aborted dose at %lu.%03lu ml of %lu.%03lu ml",
-						motor_ctrl.dose_tracker.delivered_ml / 1000,
-						motor_ctrl.dose_tracker.delivered_ml % 1000,
-						motor_ctrl.dose_tracker.target_volume_ml / 1000,
-						motor_ctrl.dose_tracker.target_volume_ml % 1000);
-				motor_ctrl.dose_tracker.dose_active = false;
-			}
 
 			/* Stop step generation, then de-energize. Disabling (EN high)
 			 * also clears the TMC's drv_err latch (datasheet §15.2) → DIAG
@@ -383,15 +353,13 @@ bool MotorControl_Init(void) {
 	motor_ctrl.initialized = true;
 	motor_ctrl.last_update = HAL_GetTick();
 	motor_ctrl.last_control_word = 0x0004; // Bit 2 set = "quick stop not active" baseline
-	motor_ctrl.target_flow_ml_min = 0;
+	motor_ctrl.target_step_rate = 0;
 	motor_ctrl.current_state = MOTOR_STATE_DISABLED; // Initialize state machine
 	motor_ctrl.pump_state = PUMPSTATE_INIT;
 	motor_ctrl.fault_active = false;
 	motor_ctrl.error_register = 0;
-
-	// Initialize dose tracker
-	memset(&motor_ctrl.dose_tracker, 0, sizeof(DoseTracker_t));
-	motor_ctrl.dose_tracker.dose_active = false;
+	motor_ctrl.run_consumed = false;
+	motor_ctrl.paused_steps_remaining = 0;
 
 	return true;
 }
@@ -421,38 +389,29 @@ void MotorControl_Process(void) {
 	// Read ControlWord from process image (0x6040)
 	uint16_t control_word = ProcImg_GetControlWord();
 
-	// Read TargetFlowRate from process image (0x6042 - ml/min, SIGNED)
-	int16_t target_flow = ProcImg_GetTargetFlowRate();
+	// Read StepRate from process image (0x2600 - signed µsteps/sec)
+	int16_t step_rate = ProcImg_GetStepRate();
 
-	// === CONTROLWORD BIT 4: LAST_KNOWN_FLOWRATE Feature ===
-	// Master has explicit control over flow rate latching via bit 4:
-	//   Bit 4 = 0 (CLEAR): Normal mode - use TargetFlowRate from RPDO directly
+	// === CONTROLWORD BIT 4: LAST_KNOWN_RATE Feature ===
+	//   Bit 4 = 0 (CLEAR): Normal mode - use StepRate from RPDO directly
 	//                      Zero values actually mean zero (stop), not "don't care"
-	//   Bit 4 = 1 (SET):   Last known mode - ignore RPDO, use stored last known value
-	//                      Useful for HALT/resume without resending flow rate
-	//
-	// Always update last_known when receiving non-zero value (for future use)
-	if (target_flow != 0) {
-		last_known_target_flow_ml_min = target_flow;
+	//   Bit 4 = 1 (SET):   Last known mode - ignore RPDO, use the stored value.
+	//                      Useful for HALT/resume without resending the rate.
+	// Always update last_known when receiving a non-zero value.
+	if (step_rate != 0) {
+		last_known_step_rate = step_rate;
 	}
 
-	// Apply flow rate based on bit 4 state
-	if (control_word & CONTROLWORD_LAST_KNOWN_FLOWRATE) {
-		// Bit 4 SET: Master requests last known flow rate (ignore current RPDO value)
-		motor_ctrl.target_flow_ml_min = last_known_target_flow_ml_min;
+	if (control_word & CONTROLWORD_LAST_KNOWN_RATE) {
+		// Bit 4 SET: use last known rate (ignore current RPDO value)
+		motor_ctrl.target_step_rate = last_known_step_rate;
 	} else {
-		// Bit 4 CLEAR: Normal mode - use RPDO value directly (zero means stop)
-		motor_ctrl.target_flow_ml_min = target_flow;
+		// Bit 4 CLEAR: normal mode - use RPDO value directly (zero means stop)
+		motor_ctrl.target_step_rate = step_rate;
 	}
 
 	// Process control word commands
 	MotorControl_ProcessControlWord(control_word);
-
-	// === DOSE PROGRESS MONITORING ===
-	// Check dose progress if active (zero overhead when dose_active==false)
-	if (motor_ctrl.dose_tracker.dose_active) {
-		MotorControl_CheckDoseProgress();
-	}
 
 	if (motor_ctrl.current_state == MOTOR_STATE_ENABLED_STOPPED
 			&& !Stepper_IsMoving()) {
@@ -503,7 +462,7 @@ void MotorControl_EmergencyStop(void) {
  * @brief Reset motor control on NMT state change
  * @note  Also resets current_state to DISABLED to prevent state machine
  *        from becoming stuck in RUNNING state during NMT RESET_COMMUNICATION.
- * @note  Clears cached TargetFlowRate on NMT reset to ensure
+ * @note  Clears cached StepRate on NMT reset to ensure
  *        clean state after communication reset.
  */
 void MotorControl_Reset(void) {
@@ -515,17 +474,15 @@ void MotorControl_Reset(void) {
 			Stepper_Disable(); // De-energize coils on NMT reset (EN pin HIGH)
 		}
 		motor_ctrl.last_control_word = 0x0004; //Bit 2 set = "quick stop not active" baseline
-		motor_ctrl.target_flow_ml_min = 0;
+		motor_ctrl.target_step_rate = 0;
 		motor_ctrl.pump_state = PUMPSTATE_STOPPED;
 		motor_ctrl.fault_active = false;
 		motor_ctrl.error_register = 0;
 		gMCOConfig.error_register &= (uint8_t) ~ERREG_MOTOR_BITS;
 		motor_ctrl.current_state = MOTOR_STATE_DISABLED;
-		last_known_target_flow_ml_min = 0;
-
-		// Clear dose tracker on NMT reset to prevent stale state from previous dose
-		memset(&motor_ctrl.dose_tracker, 0, sizeof(DoseTracker_t));
-		motor_ctrl.dose_tracker.dose_active = false;
+		motor_ctrl.run_consumed = false;
+		motor_ctrl.paused_steps_remaining = 0;
+		last_known_step_rate = 0;
 
 		// Reset all one-shot log flags on NMT reset
 		memset(&log_once, 0, sizeof(log_once));
@@ -535,69 +492,42 @@ void MotorControl_Reset(void) {
 /* Private function implementations ------------------------------------------*/
 
 /**
- * @brief Get effective steps/ml using dynamic FlowCorrectionFactor from OD 0x2200
- * @return BASE_STEPS_PER_ML × correction factor (clamped to [0.1, 10.0] for safety)
- * @note Reads FlowCorrectionFactor from process image each call — master can update
- *       via SDO at any time. Safety clamp prevents division-by-zero or absurd values
- *       if the master writes garbage to 0x2200.
+ * @brief Convert a step rate (µsteps/sec magnitude) to the stepper's native RPM
+ * @param steps_per_sec  unsigned µsteps/sec (already sign-stripped by caller)
+ * @return RPM, rounded to nearest, clamped to STEPPER_MAX_SPEED_RPM
+ * @note  Pure mechanical relation: rpm = steps_per_sec × 60 / STEPS_PER_REV.
+ *        NO ml or calibration math — the pump is unit-agnostic below the bus.
+ *        The rate ultimately drives the (validated) RPM ramp via
+ *        Stepper_SetSpeedRPM; a native steps/s→ARR path is deferred so the
+ *        proven acceleration profile is not perturbed by this refactor.
  */
-static inline float GetStepsPerMl(void) {
-	float correction = ProcImg_GetFlowCorrectionFactor();
-	if (correction < 0.1f || correction > 10.0f) {
-		correction = 1.0f;  // Fallback to uncorrected
-	}
-	return BASE_STEPS_PER_ML * correction;
-}
-
-/**
- * @brief Convert ml/min to RPM
- * @note FIX: Returns minimum 1 RPM for non-zero flow rates to prevent fallback
- *       to enum-based speed (300 RPM) when calculation rounds down to 0.
- *       Example: 1ml/min = 0.9 RPM → was truncating to 0 → fallback to 300 RPM
- */
-static uint16_t mlPerMin_to_rpm(uint16_t ml_per_min) {
-	if (ml_per_min == 0)
+static uint16_t stepRate_to_rpm(uint16_t steps_per_sec) {
+	if (steps_per_sec == 0)
 		return 0;
 
-	// Convert: ml/min → steps/sec → RPM
-	// steps_per_sec = (ml_per_min / 60.0) * STEPS_PER_ML
-	// rpm = (steps_per_sec * 60) / STEPS_PER_REV
+	uint32_t rpm = ((uint32_t) steps_per_sec * 60u + (STEPS_PER_REV / 2u))
+			/ STEPS_PER_REV;
 
-	float steps_per_ml = GetStepsPerMl();
-	float steps_per_sec = (ml_per_min / 60.0f) * steps_per_ml;
-	uint16_t rpm = (uint16_t) ((steps_per_sec * 60.0f) / STEPS_PER_REV);
-
-	// Ensure minimum 1 RPM for non-zero flow rates
-	// This prevents fallback to enum speed (300 RPM) when calculation
-	// rounds down to 0 (e.g., 1ml/min = 0.9 RPM → 0 → fallback to 30 RPM)
 	if (rpm == 0) {
-		rpm = 1;  // Minimum 1 RPM when flow rate is non-zero
+		rpm = 1;  // Non-zero rate must not round to a stopped motor
 	}
-
-	// Clamp to safe range
 	if (rpm > STEPPER_MAX_SPEED_RPM) {
 		rpm = STEPPER_MAX_SPEED_RPM;
 	}
-
-	return rpm;
+	return (uint16_t) rpm;
 }
 
 /**
- * @brief Convert RPM to ml/min
+ * @brief Convert native RPM back to a step rate (µsteps/sec magnitude)
+ * @param rpm  revolutions per minute
+ * @return µsteps/sec, rounded to nearest
+ * @note  Inverse of stepRate_to_rpm; used to report ActualStepRate (0x2602).
  */
-static uint16_t rpm_to_mlPerMin(uint16_t rpm) {
+static uint16_t rpm_to_stepRate(uint16_t rpm) {
 	if (rpm == 0)
 		return 0;
 
-	// Convert: RPM → steps/sec → ml/min
-	// steps_per_sec = (rpm * STEPS_PER_REV) / 60.0
-	// ml_per_min = (steps_per_sec * 60) / STEPS_PER_ML
-
-	float steps_per_ml = GetStepsPerMl();
-	float steps_per_sec = (rpm * STEPS_PER_REV) / 60.0f;
-	uint16_t ml_per_min = (uint16_t) ((steps_per_sec * 60.0f) / steps_per_ml);
-
-	return ml_per_min;
+	return (uint16_t) (((uint32_t) rpm * STEPS_PER_REV + 30u) / 60u);
 }
 
 /**
@@ -628,6 +558,12 @@ static bool HandleFaultReset(uint16_t rising_edges) {
 		// the motor-owned bits; the stack owns others (e.g. 0x20 init error).
 		motor_ctrl.error_register = 0;
 		gMCOConfig.error_register &= (uint8_t) ~ERREG_MOTOR_BITS;
+		motor_ctrl.run_consumed = false;
+		motor_ctrl.paused_steps_remaining = 0;
+
+		// Clear the Phase 2 fault diagnostics (0x2502/0x2503) to their idle values
+		ProcImg_SetFaultSource(FAULT_SRC_NONE);
+		ProcImg_SetLastDrvStatus(0);
 
 		// CiA 301 "error reset / no error" — master sees recovery event-driven
 		MCOP_PushEMCY(EMCY_CODE_RESET, 0, 0, 0, 0, FAULT_SRC_NONE);
@@ -651,17 +587,10 @@ static bool HandleQuickStop(uint16_t falling_edges, uint16_t control_word) {
 		Stepper_Disable(); // QUICK_STOP: Full de-energization (EN=HIGH, coils off)
 		motor_ctrl.current_state = MOTOR_STATE_QUICKSTOPPING;
 		motor_ctrl.pump_state = PUMPSTATE_STOPPING;
-
-		// Clear dose active flag if dose was running
-		if (motor_ctrl.dose_tracker.dose_active) {
-			DBG_STATE(DOSE,
-					"QUICKSTOP aborted dose at %lu.%03lu ml of %lu.%03lu ml",
-					motor_ctrl.dose_tracker.delivered_ml / 1000,
-					motor_ctrl.dose_tracker.delivered_ml % 1000,
-					motor_ctrl.dose_tracker.target_volume_ml / 1000,
-					motor_ctrl.dose_tracker.target_volume_ml % 1000);
-			motor_ctrl.dose_tracker.dose_active = false;
-		}
+		// Abort any step-counted move; the stepper cleared its own steps_remaining
+		// on Stepper_Stop(), so just drop the completion latch + any paused count.
+		motor_ctrl.run_consumed = false;
+		motor_ctrl.paused_steps_remaining = 0;
 		return true;
 	}
 	return false;
@@ -762,49 +691,11 @@ static MotorState_t DetermineTargetState(uint16_t control_word) {
 }
 
 /**
- * @brief Clear dose completion flags on ControlWord or FlowRate change
- * @param control_word  Current control word
- * @note Resets log_once.dose_blocking when flag is cleared
- */
-static void HandleDoseCompletionFlags(uint16_t control_word) {
-	if (!motor_ctrl.dose_tracker.just_completed) {
-		return;
-	}
-
-	bool controlword_changed = (control_word != motor_ctrl.last_control_word);
-	bool flowrate_changed = (last_known_target_flow_ml_min
-			!= motor_ctrl.dose_tracker.flow_rate_at_completion);
-
-	if (controlword_changed || flowrate_changed) {
-		motor_ctrl.dose_tracker.just_completed = 0;
-		motor_ctrl.dose_tracker.flow_rate_at_completion =
-				last_known_target_flow_ml_min; // Update tracking variable
-
-		// Reset one-shot log flag so next dose completion logs once
-		log_once.dose_blocking = false;
-
-		if (controlword_changed && flowrate_changed) {
-			DBG_STATE(DOSE,
-					"Dose completion flag cleared - new ControlWord (0x%04X) AND FlowRate (%d ml/min)",
-					control_word, last_known_target_flow_ml_min);
-		} else if (controlword_changed) {
-			DBG_STATE(DOSE,
-					"Dose completion flag cleared - new ControlWord: 0x%04X",
-					control_word);
-		} else {
-			DBG_STATE(DOSE,
-					"Dose completion flag cleared - new TargetFlowRate: %d ml/min",
-					last_known_target_flow_ml_min);
-		}
-	}
-}
-
-/**
- * @brief Check if state transition should be blocked (deceleration or dose completion)
+ * @brief Check if state transition should be blocked (deceleration or run-consumed)
  * @param target_state   Desired target state
- * @param control_word   Current control word (for dose blocking log)
+ * @param control_word   Current control word (for run-consumed blocking log)
  * @return true if transition is blocked (caller should return)
- * @note Uses log_once.decel_blocking and log_once.dose_blocking
+ * @note Uses log_once.decel_blocking and log_once.run_blocking
  */
 static bool CheckTransitionBlocking(MotorState_t target_state,
 		uint16_t control_word) {
@@ -827,13 +718,15 @@ static bool CheckTransitionBlocking(MotorState_t target_state,
 	// Stepper finished decelerating — reset one-shot flag for next time
 	log_once.decel_blocking = false;
 
-	// Dose completion blocking: block RUNNING with stale ControlWord after dose ends
-	if (motor_ctrl.dose_tracker.just_completed) {
-		if (!log_once.dose_blocking) {
-			DBG_STATE(DOSE,
-					"Blocking RUNNING transition - dose just completed (stale ControlWord 0x%04X)",
+	// Run-consumed blocking: after a step-counted move auto-stops, block RUNNING
+	// on a lingering enable ControlWord until a fresh command re-arms it
+	// (cleared in MotorControl_ProcessControlWord).
+	if (motor_ctrl.run_consumed) {
+		if (!log_once.run_blocking) {
+			DBG_STATE(MOTOR,
+					"Blocking RUNNING transition - run consumed (stale ControlWord 0x%04X)",
 					control_word);
-			log_once.dose_blocking = true;
+			log_once.run_blocking = true;
 		}
 		return true;
 	}
@@ -843,23 +736,28 @@ static bool CheckTransitionBlocking(MotorState_t target_state,
 
 /**
  * @brief Execute exit actions when leaving current state
- * @param target_state  State being transitioned TO (used for dose pause tracking)
+ * @param target_state  State being transitioned TO (used to detect a HALT/pause)
  */
 static void ExecuteExitActions(MotorState_t target_state) {
 	switch (motor_ctrl.current_state) {
 	case MOTOR_STATE_RUNNING:
+		// Pause/resume (workflow D): if this exit is a HALT/pause (power stays
+		// on → ENABLED_STOPPED) mid step-counted move, capture the remaining
+		// count BEFORE decel so resume can restart it (TargetSteps was consumed
+		// to 0 at latch). A continuous jog has steps_remaining==0, so nothing is
+		// captured. Aborts (→QUICKSTOPPING/DISABLED) skip this and clear it.
+		if (target_state == MOTOR_STATE_ENABLED_STOPPED) {
+			motor_ctrl.paused_steps_remaining = Stepper_GetStepsRemaining();
+			if (motor_ctrl.paused_steps_remaining > 0) {
+				DBG_STATE(MOTOR, "HALT mid-move - %lu steps held for resume",
+						(unsigned long) motor_ctrl.paused_steps_remaining);
+			}
+		}
 		// Exiting RUNNING - graceful deceleration stop
 		DBG_STATE(MOTOR,
 				"ACTION: Stopping motor with deceleration (exit RUNNING state)");
 		Stepper_NormalStop();
 		motor_ctrl.pump_state = PUMPSTATE_STOPPING;
-
-		// Dose pause tracking: record pause start time
-		if (motor_ctrl.dose_tracker.dose_active
-				&& target_state == MOTOR_STATE_ENABLED_STOPPED) {
-			motor_ctrl.dose_tracker.pause_start_ms = HAL_GetTick();
-			DBG_STATE(DOSE, "HALT initiated - pause tracking started");
-		}
 		break;
 
 	case MOTOR_STATE_ENABLED_STOPPED:
@@ -875,7 +773,8 @@ static void ExecuteExitActions(MotorState_t target_state) {
 /**
  * @brief Execute entry actions when entering target state
  * @param target_state  State being transitioned INTO
- * @note Handles dose latching, direction/speed config, and Stepper_StartJog()
+ * @note Handles TargetSteps latching / resume, direction+rate config, and the
+ *       Stepper_StartSteps() call (count 0 = continuous jog).
  */
 static void ExecuteEntryActions(MotorState_t target_state) {
 	switch (target_state) {
@@ -886,12 +785,11 @@ static void ExecuteEntryActions(MotorState_t target_state) {
 			Stepper_Stop();
 		}
 		Stepper_Disable();
-		// De-energizing ABANDONS any in-flight dose (consistent with QUICKSTOP).
-		// Without this, dose_active leaks true across a soft-disable (e.g. 0x0F→0x06
-		// with the quick-stop bit still set) and a later re-enable would RESUME the
-		// old dose instead of starting fresh. 0x2300 is already 0 (consumed at latch),
-		// so clearing dose_active is all that's needed to fully drop the dose intent.
-		motor_ctrl.dose_tracker.dose_active = false;
+		// De-energizing ABANDONS any in-flight step-counted move (consistent with
+		// QUICKSTOP). Drop the paused count + completion latch so a later re-enable
+		// starts fresh from a new TargetSteps rather than resuming a stale move.
+		motor_ctrl.paused_steps_remaining = 0;
+		motor_ctrl.run_consumed = false;
 		motor_ctrl.pump_state = PUMPSTATE_STOPPED;
 		break;
 
@@ -908,103 +806,65 @@ static void ExecuteEntryActions(MotorState_t target_state) {
 		break;
 
 	case MOTOR_STATE_RUNNING: {
-		// Entering RUNNING - configure speed/direction before starting
+		// Entering RUNNING - configure direction/rate, then start the move.
 		DBG_STATE(MOTOR, "ACTION: Starting motor");
 
-		// Dose pause tracking: accumulate pause time if resuming from HALT
-		if (motor_ctrl.dose_tracker.dose_active
-				&& motor_ctrl.dose_tracker.pause_start_ms > 0) {
-			uint32_t pause_duration = HAL_GetTick()
-					- motor_ctrl.dose_tracker.pause_start_ms;
-			motor_ctrl.dose_tracker.total_pause_ms += pause_duration;
-			motor_ctrl.dose_tracker.pause_start_ms = 0;
-			DBG_STATE(DOSE,
-					"Resume from HALT - pause duration: %lu ms (total: %lu ms)",
-					pause_duration, motor_ctrl.dose_tracker.total_pause_ms);
-		}
-
-		// Dose parameter latching
-		uint32_t dose_volume = ProcImg_GetDoseVolume();
-
-		if (dose_volume > 0 && !motor_ctrl.dose_tracker.dose_active) {
-			// NEW DOSE MODE: Latch parameters at START command
-			motor_ctrl.dose_tracker.target_volume_ml = dose_volume;
-			motor_ctrl.dose_tracker.flow_rate_ml_min =
-					ProcImg_GetDoseFlowRate();
-			motor_ctrl.dose_tracker.timeout_sec = ProcImg_GetDoseTimeout();
-
-			motor_ctrl.dose_tracker.dose_active = true;
-			motor_ctrl.dose_tracker.start_time_ms = HAL_GetTick();
-			motor_ctrl.dose_tracker.start_position = Stepper_GetPosition();
-			motor_ctrl.dose_tracker.delivered_ml = 0;
-
-			/* CONSUME-ON-LATCH: the dose intent now lives solely in dose_tracker
-			 * (dose_active + target_volume_ml). Zero the OD setpoint 0x2300
-			 * immediately so it can never go stale: every stop/abort/disable/
-			 * fault/reset path already clears dose_active, and with 0x2300 already
-			 * 0 there is nothing left to re-arm a dose on the next START. All OD
-			 * dose params (0x2301 flow, 0x2305 timeout) were already read above.
-			 * NOTE: 0x2300 now reads 0 during an active dose — progress is reported
-			 * separately on DoseDelivered (0x2304); the master must not read 0x2300
-			 * back for armed-volume/progress. */
-			ProcImg_SetDoseVolume(0);
-
-			motor_ctrl.target_flow_ml_min =
-					motor_ctrl.dose_tracker.flow_rate_ml_min;
-
-			DBG_STATE(DOSE,
-					"NEW DOSE - Latched parameters: Volume=%lu.%03lu ml, FlowRate=%d ml/min, Timeout=%u sec",
-					motor_ctrl.dose_tracker.target_volume_ml / 1000,
-					motor_ctrl.dose_tracker.target_volume_ml % 1000,
-					motor_ctrl.dose_tracker.flow_rate_ml_min,
-					motor_ctrl.dose_tracker.timeout_sec);
-		} else if (motor_ctrl.dose_tracker.dose_active) {
-			// RESUME DOSE: Use latched parameters, preserve volume tracking
-			motor_ctrl.target_flow_ml_min =
-					motor_ctrl.dose_tracker.flow_rate_ml_min;
-			DBG_STATE(DOSE,
-					"RESUME DOSE - Continuing with latched parameters (Volume=%lu.%03lu ml, FlowRate=%d ml/min)",
-					motor_ctrl.dose_tracker.target_volume_ml / 1000,
-					motor_ctrl.dose_tracker.target_volume_ml % 1000,
-					motor_ctrl.dose_tracker.flow_rate_ml_min);
-		} else {
-			// CONTINUOUS MODE: Normal operation (dose_volume = 0)
-			motor_ctrl.dose_tracker.dose_active = false;
-			DBG_STATE(DOSE, "Continuous mode (DoseVolume=0)");
-		}
-
-		// Direction/speed configuration
+		// Direction + rate come from the signed StepRate (0x2600); the MIK owns
+		// all ml↔steps math. Sign = direction (dose CW / draw CCW).
 		Stepper_Direction_t direction;
-		int16_t flow_magnitude;
-		if (motor_ctrl.target_flow_ml_min < 0) {
+		uint16_t rate_magnitude;
+		if (motor_ctrl.target_step_rate < 0) {
 			direction = STEPPER_DIR_CCW;
-			flow_magnitude = -motor_ctrl.target_flow_ml_min;
+			rate_magnitude = (uint16_t) (-motor_ctrl.target_step_rate);
 		} else {
 			direction = STEPPER_DIR_CW;
-			flow_magnitude = motor_ctrl.target_flow_ml_min;
+			rate_magnitude = (uint16_t) motor_ctrl.target_step_rate;
 		}
 
 		Stepper_SetDirection(direction);
-		uint16_t target_rpm = mlPerMin_to_rpm((uint16_t) flow_magnitude);
+		uint16_t target_rpm = stepRate_to_rpm(rate_magnitude);
 		Stepper_SetSpeedRPM(target_rpm);
-		DBG_STATE(MOTOR, "ACTION: Configured DIR=%s, RPM=%u",
-				(direction == STEPPER_DIR_CW) ? "CW" : "CCW", target_rpm);
+
+		// Decide the move length:
+		//   - resume of a paused counted move → the held remaining count
+		//   - else fresh: TargetSteps (0x2601) from the OD; >0 = counted move
+		//     (consume-on-latch: zero it so it can't re-arm), 0 = continuous jog.
+		uint32_t steps;
+		if (motor_ctrl.paused_steps_remaining > 0) {
+			steps = motor_ctrl.paused_steps_remaining;
+			motor_ctrl.paused_steps_remaining = 0;
+			DBG_STATE(MOTOR, "RESUME - continuing held count %lu steps",
+					(unsigned long) steps);
+		} else {
+			steps = ProcImg_GetTargetSteps();
+			if (steps > 0) {
+				// Zero the OD copy so an event-driven master can't leave a stale
+				// TargetSteps armed. NOTE: RPDO1 is synchronous, so the stack
+				// re-copies the buffered frame back on the next SYNC — the real
+				// re-arm guard is run_consumed (a ControlWord edge), not this
+				// write. Harmless either way; kept for the event-driven case.
+				ProcImg_SetTargetSteps(0);
+				DBG_STATE(MOTOR, "NEW COUNTED MOVE - %lu steps",
+						(unsigned long) steps);
+			} else {
+				DBG_STATE(MOTOR, "CONTINUOUS jog (TargetSteps=0)");
+			}
+		}
+
 		DBG_STATE(MOTOR,
-				"STARTUP DIAG: flow=%d ml/min, magnitude=%d, dir=%s, rpm=%u, ARR=%lu",
-				motor_ctrl.target_flow_ml_min, flow_magnitude,
+				"STARTUP DIAG: rate=%d steps/s, mag=%u, dir=%s, rpm=%u, steps=%lu, ARR=%lu",
+				motor_ctrl.target_step_rate, rate_magnitude,
 				(direction == STEPPER_DIR_CW) ? "CW" : "CCW", target_rpm,
-				(unsigned long )Stepper_GetTimerARR());
+				(unsigned long) steps, (unsigned long) Stepper_GetTimerARR());
 
 		// Enable driver if not already enabled (handles DISABLED→RUNNING case)
 		Stepper_Enable();
 		Stepper_SetOutputProtection(false);
 
-		// Start motor. Stepper_StartSteps(0) == continuous jog (0 = unlimited) —
-		// identical to the old Stepper_StartJog() call, routed through the new
-		// step-counter entry point. When the dose strip lands, the OD TargetSteps
-		// value replaces this 0 and continuous vs. counted becomes data-driven.
+		// Start motor. Stepper_StartSteps(0) == continuous jog; >0 delivers
+		// exactly that many pulses then auto-stops (STEPPER_EVT_TARGET_REACHED).
 		motor_ctrl.pump_state = PUMPSTATE_STARTING;
-		Stepper_StartSteps(0);
+		Stepper_StartSteps(steps);
 		motor_ctrl.pump_state = PUMPSTATE_RUNNING;
 		break;
 	}
@@ -1038,12 +898,12 @@ static void MotorControl_ProcessControlWord(uint16_t control_word) {
 
 			// Log individual bit states
 			DBG_PRINT_V(MOTOR,
-					"Bits: EN=%d START=%d QSTOP=%d RESET=%d | Flow=%d ml/min",
+					"Bits: EN=%d START=%d QSTOP=%d RESET=%d | Rate=%d steps/s",
 					(control_word & CONTROLWORD_SWITCH_ON) ? 1 : 0,
 					(control_word & CONTROLWORD_ENABLE_OP) ? 1 : 0,
 					(control_word & CONTROLWORD_QUICKSTOP) ? 1 : 0,
 					(control_word & CONTROLWORD_FAULT_RESET) ? 1 : 0,
-					motor_ctrl.target_flow_ml_min);
+					motor_ctrl.target_step_rate);
 		}
 	}
 
@@ -1061,7 +921,19 @@ static void MotorControl_ProcessControlWord(uint16_t control_word) {
 
 	// State machine
 	MotorState_t target_state = DetermineTargetState(control_word);
-	HandleDoseCompletionFlags(control_word);
+
+	// Clear the run-consumed latch only on a ControlWord CHANGE (a fresh
+	// enable/run edge). It deliberately does NOT key off TargetSteps: RPDO1 is a
+	// SYNCHRONOUS PDO, so the stack re-copies the last received frame into the
+	// process image on EVERY SYNC (mcop.c PDO_RXCOPY) — TargetSteps therefore
+	// reads as the commanded N continuously, and could never signal "fresh." The
+	// master re-arms a completed step-counted move with a ControlWord edge
+	// (e.g. 0x0007→0x000F); a lingering 0x000F alone will not restart it.
+	if (motor_ctrl.run_consumed
+			&& control_word != motor_ctrl.last_control_word) {
+		motor_ctrl.run_consumed = false;
+		log_once.run_blocking = false;
+	}
 
 	if (target_state != motor_ctrl.current_state) {
 		if (CheckTransitionBlocking(target_state, control_word))
@@ -1144,110 +1016,6 @@ static uint16_t MotorControl_GenerateStatusWord(void) {
 
 
 /**
- * @brief Check dose progress and handle completion/timeout
- * @note Only called when dose_active == true (zero overhead for continuous mode)
- */
-static void MotorControl_CheckDoseProgress(void) {
-	if (!motor_ctrl.dose_tracker.dose_active) {
-		return;  // Not in dose mode, skip check
-	}
-
-	// Calculate delivered volume from stepper position
-	int32_t current_position = Stepper_GetPosition();
-	int32_t steps_moved = labs(
-			current_position - motor_ctrl.dose_tracker.start_position);
-	motor_ctrl.dose_tracker.delivered_ml = (uint32_t) ((float) steps_moved
-			* 1000.0f / GetStepsPerMl());
-
-	// Check for completion (target volume reached)
-	if (motor_ctrl.dose_tracker.delivered_ml
-			>= motor_ctrl.dose_tracker.target_volume_ml) {
-		DBG_STATE(DOSE,
-				"Target volume reached: %lu.%03lu ml (target: %lu.%03lu ml)",
-				motor_ctrl.dose_tracker.delivered_ml / 1000,
-				motor_ctrl.dose_tracker.delivered_ml % 1000,
-				motor_ctrl.dose_tracker.target_volume_ml / 1000,
-				motor_ctrl.dose_tracker.target_volume_ml % 1000);
-		Stepper_NormalStop();  // Graceful deceleration
-		motor_ctrl.dose_tracker.dose_active = false;
-
-		// Update state machine to ENABLED_STOPPED
-		// Without this, state remains MOTOR_STATE_RUNNING after dose completes,
-		// causing next RPDO START command to be ignored (target_state == current_state)
-		motor_ctrl.current_state = MOTOR_STATE_ENABLED_STOPPED;
-		motor_ctrl.pump_state = PUMPSTATE_STOPPED;
-
-		// Set dose completion flag to prevent unwanted restart
-		// This blocks RUNNING transition with stale 0x000F ControlWord
-		motor_ctrl.dose_tracker.just_completed = 1;
-		motor_ctrl.dose_tracker.flow_rate_at_completion =
-				last_known_target_flow_ml_min; // Capture current flow rate for change detection
-		DBG_STATE(DOSE,
-				"Dose completion flag set - blocking stale RUNNING command (flow=%d ml/min)",
-				last_known_target_flow_ml_min);
-
-		// Clear DoseVolume to prevent re-latching on next START
-		ProcImg_SetDoseVolume(0);
-
-		return;
-	}
-
-	// Check for timeout (if configured)
-	if (motor_ctrl.dose_tracker.timeout_sec > 0) {
-		// Calculate elapsed time with pause adjustment
-		uint32_t wall_time_ms = HAL_GetTick()
-				- motor_ctrl.dose_tracker.start_time_ms;
-		uint32_t active_pause_ms = 0;
-
-		// Add current pause duration if currently paused
-		if (motor_ctrl.dose_tracker.pause_start_ms > 0) {
-			active_pause_ms = HAL_GetTick()
-					- motor_ctrl.dose_tracker.pause_start_ms;
-		}
-
-		// Effective elapsed time = wall time - total accumulated pause - active pause
-		uint32_t effective_elapsed_ms = wall_time_ms
-				- motor_ctrl.dose_tracker.total_pause_ms - active_pause_ms;
-		uint32_t elapsed_sec = effective_elapsed_ms / 1000;
-
-		if (elapsed_sec >= motor_ctrl.dose_tracker.timeout_sec) {
-			DBG_STATE(DOSE,
-					"Timeout after %lu seconds active time (delivered: %lu.%03lu ml of %lu.%03lu ml)",
-					elapsed_sec, motor_ctrl.dose_tracker.delivered_ml / 1000,
-					motor_ctrl.dose_tracker.delivered_ml % 1000,
-					motor_ctrl.dose_tracker.target_volume_ml / 1000,
-					motor_ctrl.dose_tracker.target_volume_ml % 1000);
-			DBG_PRINT_V(DOSE,
-					"Pause time breakdown: total_pause=%lu ms, active_pause=%lu ms",
-					motor_ctrl.dose_tracker.total_pause_ms, active_pause_ms);
-			Stepper_NormalStop();  // Graceful deceleration
-			motor_ctrl.dose_tracker.dose_active = false;
-
-			// Update state machine to ENABLED_STOPPED
-			// Without this, state remains MOTOR_STATE_RUNNING after timeout,
-			// causing next RPDO START command to be ignored (target_state == current_state)
-			motor_ctrl.current_state = MOTOR_STATE_ENABLED_STOPPED;
-			motor_ctrl.pump_state = PUMPSTATE_STOPPED;
-
-			// Set dose completion flag to prevent unwanted restart
-			motor_ctrl.dose_tracker.just_completed = 1;
-			motor_ctrl.dose_tracker.flow_rate_at_completion =
-					last_known_target_flow_ml_min;
-			DBG_STATE(DOSE,
-					"Timeout - dose completion flag set - blocking stale RUNNING command");
-
-			// Clear DoseVolume to prevent re-latching on next START
-			ProcImg_SetDoseVolume(0);
-
-			return;
-		}
-	}
-
-	// Update DoseDelivered in process image for TPDO2 reporting
-	ProcImg_SetDoseDelivered(motor_ctrl.dose_tracker.delivered_ml);
-}
-
-/**
  * @brief Update process image with current status
  */
 static void MotorControl_UpdateProcessImage(void) {
@@ -1255,28 +1023,24 @@ static void MotorControl_UpdateProcessImage(void) {
 	uint16_t status_word = MotorControl_GenerateStatusWord();
 	ProcImg_SetStatusWord(status_word);
 
-	// Calculate ActualFlowRate (0x6043 - ml/min, SIGNED with direction)
-	int16_t actual_flow;
-
+	// ActualStepRate (0x2602 - signed µsteps/sec with direction). Reported from
+	// the stepper's own RPM back to steps/s (inverse of the start conversion).
+	int16_t actual_rate;
 	if (Stepper_IsMoving()) {
-		// Motor is running - report actual speed with direction
-		uint16_t actual_rpm = Stepper_GetSpeedRPM();
-		uint16_t flow_magnitude = rpm_to_mlPerMin(actual_rpm);
+		uint16_t rate_magnitude = rpm_to_stepRate(Stepper_GetSpeedRPM());
 
 		Stepper_Status_t stepper_status;
 		Stepper_GetStatus(&stepper_status);
 
 		if (stepper_status.direction == STEPPER_DIR_CCW) {
-			actual_flow = -(int16_t) flow_magnitude; // Negative for reverse/draw
+			actual_rate = -(int16_t) rate_magnitude; // Negative for reverse/draw
 		} else {
-			actual_flow = (int16_t) flow_magnitude; // Positive for forward/delivery
+			actual_rate = (int16_t) rate_magnitude; // Positive for forward/delivery
 		}
 	} else {
-		// Motor is stopped - report 0
-		actual_flow = 0;
+		actual_rate = 0;  // Motor stopped
 	}
-
-	ProcImg_SetActualFlowRate(actual_flow);
+	ProcImg_SetActualStepRate(actual_rate);
 
 	// Update PumpState (0x2400) — use state-machine-driven pump_state directly
 	// Fault override ensures PUMPSTATE_FAULT is always reported regardless of pump_state
@@ -1292,22 +1056,10 @@ static void MotorControl_UpdateProcessImage(void) {
 		ProcImg_SetErrorRegister(0x00);
 	}
 
-	// Update DoseStatus (0x2303 - for debug/calibration)
-	uint8_t dose_status;
-	if (motor_ctrl.dose_tracker.dose_active) {
-		dose_status = DOSE_STATUS_RUNNING;
-	} else if (motor_ctrl.dose_tracker.delivered_ml
-			>= motor_ctrl.dose_tracker.target_volume_ml
-			&& motor_ctrl.dose_tracker.target_volume_ml > 0) {
-		dose_status = DOSE_STATUS_COMPLETE;
-	} else {
-		dose_status = DOSE_STATUS_IDLE;
-	}
-	ProcImg_SetDoseStatus(dose_status);
-
-	// Update DoseDelivered (0x2304 - already updated in CheckDoseProgress, refresh here)
-	ProcImg_SetDoseDelivered(motor_ctrl.dose_tracker.delivered_ml);
-
+	// StepsRemaining (0x2603 - TPDO2): live countdown of the active step-counted
+	// move (0 for a continuous jog or when idle). The MIK derives delivered
+	// volume as (TargetSteps − remaining) / steps_per_ml.
+	ProcImg_SetStepsRemaining(Stepper_GetStepsRemaining());
 }
 
 

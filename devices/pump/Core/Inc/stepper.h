@@ -163,6 +163,14 @@ void Stepper_StartSteps(uint32_t count);
 int32_t Stepper_GetPosition(void);
 
 /**
+ * @brief Get pulses remaining in the active step-counted move
+ * @retval steps_remaining (0 = idle or continuous jog)
+ * @note   Counts down to the exact-cutoff auto-stop; feeds TPDO2
+ *         StepsRemaining for MIK dose-progress display.
+ */
+uint32_t Stepper_GetStepsRemaining(void);
+
+/**
  * @brief Read-and-clear pending stepper event flags
  * @retval Bitmask of STEPPER_EVT_* flags that were pending
  * @note  Atomically reads and clears the ISR-written bitfield using

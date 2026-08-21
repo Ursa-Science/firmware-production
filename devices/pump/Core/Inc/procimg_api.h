@@ -5,6 +5,13 @@
  * @note    Isolates gProcImg[] byte layout in one place so that
  *          motor_control.c (and any future consumers) are agnostic to MCO
  *          internals.  All functions are static inline — zero call overhead.
+ *
+ *          Step-counter OD (dose engine stripped, 2026-08): the pump is a
+ *          "dumb" CiA 402 stepper — it speaks native microsteps and
+ *          microsteps/sec only; ALL ml math + tubing calibration lives in the
+ *          MIK. RPDO1 = ControlWord + StepRate + TargetSteps (8 B atomic);
+ *          TPDO1 = StatusWord + ActualStepRate; TPDO2 = PumpState +
+ *          ErrorRegister + StepsRemaining.
  ******************************************************************************
  */
 
@@ -28,31 +35,17 @@ static inline uint16_t ProcImg_GetControlWord(void) {
 	return val;
 }
 
-/** @brief Read TargetFlowRate [0x6042] — int16_t (signed for bidirection) */
-static inline int16_t ProcImg_GetTargetFlowRate(void) {
+/** @brief Read StepRate [0x2600] — int16_t signed µsteps/sec (sign = direction) */
+static inline int16_t ProcImg_GetStepRate(void) {
 	int16_t val;
-	memcpy(&val, &gProcImg[P604200_TargetFlowRate], 2);
+	memcpy(&val, &gProcImg[P260000_StepRate], 2);
 	return val;
 }
 
-/** @brief Read DoseVolume [0x2300] — uint32_t (ml × 1000) */
-static inline uint32_t ProcImg_GetDoseVolume(void) {
+/** @brief Read TargetSteps [0x2601] — uint32_t (µsteps to run then auto-stop; 0 = jog) */
+static inline uint32_t ProcImg_GetTargetSteps(void) {
 	uint32_t val;
-	memcpy(&val, &gProcImg[P230000_DoseVolume], 4);
-	return val;
-}
-
-/** @brief Read DoseFlowRate [0x2301] — int16_t (ml/min, signed) */
-static inline int16_t ProcImg_GetDoseFlowRate(void) {
-	int16_t val;
-	memcpy(&val, &gProcImg[P230100_DoseFlowRate], 2);
-	return val;
-}
-
-/** @brief Read DoseTimeout [0x2305] — uint16_t (seconds) */
-static inline uint16_t ProcImg_GetDoseTimeout(void) {
-	uint16_t val;
-	memcpy(&val, &gProcImg[P230500_DoseTimeout], 2);
+	memcpy(&val, &gProcImg[P260100_TargetSteps], 4);
 	return val;
 }
 
@@ -63,9 +56,19 @@ static inline void ProcImg_SetStatusWord(uint16_t sw) {
 	memcpy(&gProcImg[P604100_StatusWord], &sw, 2);
 }
 
-/** @brief Write ActualFlowRate [0x6043] — int16_t */
-static inline void ProcImg_SetActualFlowRate(int16_t flow) {
-	memcpy(&gProcImg[P604300_ActualFlowRate], &flow, 2);
+/** @brief Write ActualStepRate [0x2602] — int16_t signed µsteps/sec */
+static inline void ProcImg_SetActualStepRate(int16_t rate) {
+	memcpy(&gProcImg[P260200_ActualStepRate], &rate, 2);
+}
+
+/** @brief Write StepsRemaining [0x2603] — uint32_t (countdown to auto-stop) */
+static inline void ProcImg_SetStepsRemaining(uint32_t remaining) {
+	memcpy(&gProcImg[P260300_StepsRemaining], &remaining, 4);
+}
+
+/** @brief Write TargetSteps [0x2601] — uint32_t (consume-on-latch: zero after arming) */
+static inline void ProcImg_SetTargetSteps(uint32_t steps) {
+	memcpy(&gProcImg[P260100_TargetSteps], &steps, 4);
 }
 
 /** @brief Write PumpState [0x2400] — uint8_t */
@@ -78,28 +81,26 @@ static inline void ProcImg_SetErrorRegister(uint8_t err) {
 	gProcImg[P100100_Error_Register] = err;
 }
 
-/** @brief Write DoseStatus [0x2303] — uint8_t */
-static inline void ProcImg_SetDoseStatus(uint8_t status) {
-	gProcImg[P230300_DoseStatus] = status;
+/* ---- FAULT FEEDBACK (0x2500-0x2503, SDO-only diagnostics) -------------- */
+
+/** @brief Write TMCInitStatus [0x2500] — uint8_t (TMC2209_Status_t at boot) */
+static inline void ProcImg_SetTMCInitStatus(uint8_t status) {
+	gProcImg[P250000_TMCInitStatus] = status;
 }
 
-/** @brief Write DoseDelivered [0x2304] — uint32_t (ml × 1000) */
-static inline void ProcImg_SetDoseDelivered(uint32_t delivered) {
-	memcpy(&gProcImg[P230400_DoseDelivered], &delivered, 4);
+/** @brief Write TMCInitFailedStep [0x2501] — uint8_t (TMC2209_InitStep_t) */
+static inline void ProcImg_SetTMCInitFailedStep(uint8_t step) {
+	gProcImg[P250100_TMCInitFailedStep] = step;
 }
 
-/** @brief Write DoseVolume [0x2300] — uint32_t (ml × 1000) */
-static inline void ProcImg_SetDoseVolume(uint32_t volume) {
-	memcpy(&gProcImg[P230000_DoseVolume], &volume, 4);
+/** @brief Write LastDrvStatus [0x2502] — uint32_t (DRV_STATUS snapshot at fault) */
+static inline void ProcImg_SetLastDrvStatus(uint32_t drv_status) {
+	memcpy(&gProcImg[P250200_LastDrvStatus], &drv_status, 4);
 }
 
-/* ---- CALIBRATION -------------------------------------------------------- */
-
-/** @brief Read FlowCorrectionFactor [0x2200] — Real32 (IEEE 754 float) */
-static inline float ProcImg_GetFlowCorrectionFactor(void) {
-	float val;
-	memcpy(&val, &gProcImg[P220000_FlowCorrectionFactor], 4);
-	return val;
+/** @brief Write FaultSource [0x2503] — uint8_t (FAULT_SRC_* classification) */
+static inline void ProcImg_SetFaultSource(uint8_t source) {
+	gProcImg[P250300_FaultSource] = source;
 }
 
 /* ---- LED CONTROL -------------------------------------------------------- */

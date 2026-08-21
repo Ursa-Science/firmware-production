@@ -473,6 +473,17 @@ int32_t Stepper_GetPosition(void) {
 }
 
 /**
+ * @brief Get pulses left in the active step-counted move
+ * @retval steps_remaining (0 = idle or continuous jog)
+ * @note   Single aligned 32-bit read → atomic on Cortex-M4; the ISR only
+ *         decrements it, so a lock-free read is safe. Feeds TPDO2
+ *         StepsRemaining for MIK dose-progress display.
+ */
+uint32_t Stepper_GetStepsRemaining(void) {
+	return stepper.steps_remaining;
+}
+
+/**
  * @brief Get stepper status
  */
 void Stepper_GetStatus(Stepper_Status_t *status) {

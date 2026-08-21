@@ -28,6 +28,7 @@
 #include "mco_events.h"
 #include "stepper.h"
 #include "tmc2209_uart.h"
+#include "procimg_api.h"
 #include <string.h>
 #include <stdbool.h>
 /* USER CODE END Includes */
@@ -334,10 +335,11 @@ int main(void)
 	 * datagrams were transmitted. */
 	TMC2209_Status_t tmc_status = TMC2209_Init();
 
-	/* NOTE: init status is NOT stored in the process image — 0x2500/0x2501 do
-	 * not exist in the OD yet (fault-feedback Phase 2 adds them). The writes
-	 * that used to sit here targeted gProcImg[0x67/0x68], PAST the end of the
-	 * process image (PIMGEND=0x66) — an out-of-bounds clobber on every boot. */
+	/* Fault-feedback Phase 2: tmc_status + the failed-init step are published into
+	 * the SDO-only diagnostics 0x2500/0x2501 AFTER MCOUSER_ResetCommunication()
+	 * below — the stack's boot MCO_UpdateSystemFromOD() can touch the process
+	 * image, so write these last so they survive. (Real OD entries now, in-bounds
+	 * — replacing the deleted OOB gProcImg[0x67/0x68] writes.) */
 
 	/* (The old 0x0F/ESC(B terminal-reset hack is gone: logging now goes out
 	 * over RTT/SWD, so the console never sees TMC2209 datagram bytes and
@@ -510,6 +512,13 @@ int main(void)
 
 	// MCO stack will initialize Timer 2 and motor control (via COMM_RESET event)
 	MCOUSER_ResetCommunication();
+
+	/* Fault-feedback Phase 2: publish boot TMC init result (0x2500/0x2501).
+	 * Done here, after the stack's OD-driven process-image init, so the values
+	 * are not clobbered. gProcImg is zero-initialised → 0x00/0x00 (OK / NONE)
+	 * is the correct default if TMC init succeeded. */
+	ProcImg_SetTMCInitStatus((uint8_t) tmc_status);
+	ProcImg_SetTMCInitFailedStep((uint8_t) TMC2209_GetInitFailedStep());
 
 	PrintFDCANDiagnostics();
 
