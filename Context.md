@@ -5,13 +5,14 @@ Not a tutorial and not the running log — that is `BUILD_NOTES.md`, which holds
 detailed findings, gotchas, and history. Read this first, then BUILD_NOTES.md for
 depth. Keep this file terse and current; prune stale lines rather than appending.
 
-Last updated: 2026-08-21. NOTE: pump dose-strip firmware wiring DONE — tree
-BUILDS GREEN again (pump.elf text=49540). Firmware rewired to the new
-step-counter OD; ~400-line dose engine removed (motor_control.c 1559→1301).
-NOT yet flashed/validated on hardware, and UNCOMMITTED. Last proven-flashable
-image is still commit 5906893. Node ID: regen put pump at node 1 — ACCEPTED
-2026-08-21 (master/MIK moved to a HIGH node ID, so the old node-1 master-HB
-collision no longer applies). No longer a flash blocker.
+Last updated: 2026-08-24. NOTE: pump dose-strip refactor is COMPLETE,
+HW-VALIDATED, and on `main` (pushed). New step-counter OD wired; ~400-line
+dose engine removed (motor_control.c 1559→1301). Q3 heartbeat-lost runaway
+backstop also DONE + validated + pushed. Pump runs at node 1 (master/MIK on a
+HIGH node ID, so the old node-1 HB collision is moot). main HEAD = 79b4e7e,
+== origin/main. Working tree: only docs/PUMP_FE_CONTROL_BRIEF.md is UNTRACKED
+(intentionally uncommitted). Latest flashable/validated image built from
+79b4e7e (build/pump.bin).
 
 ---
 
@@ -180,8 +181,9 @@ TWO before done.
   (future 0x2503 enum); fault reset clears both (motor-owned bits only) +
   EMCY 0x0000. NOTE: debugger-poking fault_active no longer shows ER=0x01
   (bypasses EnterFault by design) — validate via STEPPER position-limit
-  poke or gdb `call`. Phase 2 = EDS 0x2500-0x2503, BATCHED with dose-strip
-  OD change. Phase 3 = MIK app layer.
+  poke or gdb `call`. Phase 2 = EDS 0x2500-0x2503 — DONE (landed + validated
+  with the dose strip; see the dose-strip gotchas entry below). Phase 3 = MIK
+  app layer (still future).
 - **Pump stepper-code audit (2026-08-11): items 1-3 DONE.** (1) `d14edb7`
   pure removal (−483 lines dead API/state) — HW-validated same day (bench log:
   init verified, run/stop/quickstop at 10-79 RPM clean, step rate 1.00x).
@@ -209,133 +211,60 @@ TWO before done.
   not FAULT (only stack EMCY 0x8130 announces it); any stack EMCY latches
   gMCOConfig ER bit0 until a fault/NMT reset; A8/A9 (init-fail, TX-overflow
   fatal) are emitters with no practical injection.
-- **Dose-strip decisions SETTLED 2026-08-19 + step-counter primitive BUILT.**
-  Decisions: Q4 → the 4 motion quantities go to NEW manufacturer indices
-  (0x2xxx, not reused 0x6042/0x6043 — units change ml/min→steps/s; CW 0x6040
-  / SW 0x6041 stay CiA-402); stale-CW after auto-stop → firmware requires a
-  fresh command (minimal guard, no just_completed machinery, no MIK
-  obligation). Firmware: `Stepper_StartSteps(count)` added (stepper.c/h) —
-  ISR exact-cutoff at remaining==0 (pulse count exact by construction) +
-  gentle decel within braking distance + STEPPER_EVT_TARGET_REACHED; jog
-  refactored onto shared Stepper_BeginMotion; motor_control continuous start
-  now routes through Stepper_StartSteps(0). **Start path HW-confirmed
-  2026-08-19** (shares BeginMotion with the 50 ml/min jog, which runs);
-  count/cutoff logic is code-reviewed only — gdb `call` CANNOT start the
-  TIM1 PWM (inferior-call harness limit: reaches state=RUNNING but timer
-  never counts, position stuck at 0), so exact-N delivery gets real over-CAN
-  validation at OD-wiring. Stepper_SetStepRate (steps/s native) deferred to
-  OD-wiring. Plan: `docs/PUMP_DOSE_TRANSFER_PLAN.md`.
-- **EDS REGEN DONE 2026-08-19 (Windows CANopen Architect) — UNCOMMITTED, build
-  BROKEN (expected, mid-refactor).** The combined regen landed in
-  `devices/pump/MCO_CiA401__User/EDS/`: added 0x2600 StepRate(i16 rww),
-  0x2601 TargetSteps(u32 rww), 0x2602 ActualStepRate(i16 ro), 0x2603
-  StepsRemaining(u32 ro), + fault 0x2500-0x2503 (u8/u32 ro, SDO-only);
-  deleted 0x2200/0x2300-0x2305/0x6042/0x6043 (and 0x2100 MaxFlowRate/0x2102).
-  PDO maps refactored: RPDO1=CW+StepRate+TargetSteps(8B), TPDO1=SW+ActualStepRate(4B),
-  TPDO2=PumpState+ErrorReg+StepsRemaining(6B). Mapping sub-entries are U32
-  (Architect gotcha: mapping entry type is always U32 regardless of target).
-  Generated headers regenerated (pimg.h/stackinit.h/entriesandreplies.h);
-  new symbols P260000_StepRate etc. present, old dose symbols GONE.
-  **NODE ID 2→1: regen emitted `PumpModule-n01-...` (DCF NodeID=0x01); old n02
-  files DELETED. ACCEPTED at node 1 (2026-08-21): the master/MIK now uses a HIGH
-  node ID, so the old node-1 master-heartbeat collision is moot. No EDS fix
-  needed — flash as node 1.**
-- **Firmware wiring to the new OD — DONE 2026-08-21, builds green, UNCOMMITTED.**
-  Steps (1)-(4) complete: (1) `procimg_api.h` rewritten — Get StepRate(0x2600)/
-  TargetSteps(0x2601), Set ActualStepRate(0x2602)/StepsRemaining(0x2603)/
-  TargetSteps(consume-on-latch) + fault Phase 2 setters (0x2500-0x2503); dose/flow
-  accessors gone. (2) ~400-line dose engine deleted from motor_control.c
-  (DoseTracker_t, CheckDoseProgress, HandleDoseCompletionFlags, GetStepsPerMl,
-  mlPerMin_to_rpm/rpm_to_mlPerMin, DOSE_STATUS_*). (3) ExecuteEntryActions(RUNNING)
-  reads signed StepRate (sign=dir) + TargetSteps, consume-on-latch, calls
-  Stepper_StartSteps(count); TARGET_REACHED→ENABLED_STOPPED. (4) main.c restores
-  TMC-init writes to 0x2500/0x2501 — placed AFTER MCOUSER_ResetCommunication()
-  (stack's MCO_UpdateSystemFromOD can touch the PI); EnterFault writes 0x2502
-  LastDrvStatus + 0x2503 FaultSource, reset clears them.
-  Two design calls made: (a) **rate path = convert steps/s→RPM in motor_control
-  + keep the validated Stepper_SetSpeedRPM ramp** (per plan §Added; native
-  Stepper_SetStepRate/ARR-direct still DEFERRED — so RPM quantization + ActualStepRate
-  is reported through an RPM round-trip). (b) **pause/resume (workflow D)
-  implemented in motor_control**: added Stepper_GetStepsRemaining(); HALT captures
-  the remaining count (paused_steps_remaining) before decel, resume restarts
-  Stepper_StartSteps(held) — REQUIRED to avoid resuming a consumed dose as an
-  unbounded jog. CAVEAT: capture is at pause-initiation so decel steps aren't
-  re-counted → slight over-deliver on HIGH-rate paused doses; exact at low
-  (instant-stop) dosing rates. Stale-CW guard = run_consumed latch (set on
-  TARGET_REACHED, cleared by a ControlWord EDGE only).
-- **HW TEST 1 (2026-08-21, cantrace-dosingstrip1): PASSED for continuous
-  runs.** Node 1, SYNC 100ms. Run 1/10 RPM (27/267 steps/s), normal stop,
-  quick stop, re-run, NMT stop/start/reset — all correct: TPDO1=4B
-  (SW+ActualStepRate), TPDO2=6B (PumpState+ErrReg+StepsRemaining), SW state
-  machine exact (run 0x0637, normal-stop 0x0233 ENERGIZED, quick-stop 0x0207
-  DE-ENERGIZED), ActualStepRate echoes command, no faults. Counted move /
-  pause-resume NOT yet tested.
-- **BUG FOUND + FIXED 2026-08-21 (before counted-dose test): sync-RPDO
-  re-arm loop.** RPDO1 is transmission-type 1 (synchronous) → the stack
-  PDO_RXCOPYs the buffered frame into the process image on EVERY SYNC
-  (mcop.c:1431), so TargetSteps reads as the commanded N continuously. My
-  run_consumed clear-check keyed off `GetTargetSteps()>0` → a completed
-  counted dose would clear the guard and re-arm every SYNC = infinite dose
-  loop. FIX: clear run_consumed on ControlWord EDGE ONLY (matches the old
-  dose code's CW-change trigger). Consume-on-latch SetTargetSteps(0) is futile
-  under sync-RPDO (re-applied next SYNC) but kept as harmless event-driven
-  defense. Rebuilt (pump.elf text=49536); NOT yet reflashed/retested.
-  CONSEQUENCE for MIK contract: re-arming a completed dose (or launching any
-  new counted move) REQUIRES a ControlWord edge (e.g. 0x0007→0x000F), not
-  just writing a new TargetSteps. Update MIK_INTEGRATION_BRIEF.
-- **HW TEST A (2026-08-21, cantrace-dosingstrip2 + RTT): PASSED — counted
-  dose + re-arm-loop fix validated.** 8000 steps @ 800 steps/s (30 RPM):
-  NEW COUNTED MOVE latched, bus StepsRemaining counted 8000→0, exact-cutoff
-  auto-stop (TARGET_REACHED→ENABLED_STOPPED), rate measured 800=commanded.
-  GUARD PROVEN: dose completed with CW held 0x000F → RTT "Blocking RUNNING -
-  run consumed", bus StepsRemaining stayed 0 / PumpState STOPPED for ~8 s, NO
-  self-retrigger. CW-edge re-arm (0x0007→0x000F) started a fresh 8000-step
-  dose. No EMCY, ErrReg 0x00.
-- **HW TEST B (2026-08-21, cantrace-dosingstrip3 + RTT): PASSED — pause/resume
-  step-exact.** Two cycles, 8000 steps @ 800 steps/s each, HALT (CW 0x010F)
-  mid-move: RTT "HALT mid-move - N held", bus PumpState→0x06 HALT +
-  StepsRemaining FROZEN (3204, then 5920) held stable for the whole pause;
-  resume (CW 0x000F) → "RESUME - continuing held count N" → counts to 0.
-  Totals EXACT (4796+3204=8000; 2080+5920=8000); instant-stop bypass
-  (ARR 1249>700) = no decel loss. Guard re-fired at dose-2 end. Quick-stop-
-  during-jog + QS-recovery also re-validated clean. **DOSE-STRIP FIRMWARE IS
-  NOW HW-VALIDATED end-to-end** (continuous, stops, disable, NMT, counted
-  exact-N, run-consumed guard, pause/resume, CW-edge re-arm). COMMITTED +
-  merged to main + pushed (19b0ede EDS, 1f89a6f firmware). EDS/DCF propagated
-  to the gateway repo by Dakota.
-- **Q3 heartbeat-lost runaway — RESOLVED + HW-VALIDATED 2026-08-21.** Consumer
-  armed in MCOUSER_ResetCommunication (user_STM32.c): MCOP_InitHBConsumer(1,
-  127, 2500) — watch master node 127's 1 s HB, 2500 ms timeout. Armed in
-  firmware (not 0x1016 OD default → no regen; re-arms every comm reset).
-  Reaction (already wired): MCOUSER_HeartbeatLost → EmergencyStop (estop +
-  de-energize) → PRE-OP. ABORT-NOW chosen (mid-dose HB-loss aborts, partial
-  volume) — motion-state based so it covers jog AND dose; revisit "let bounded
-  dose finish" later if needed. Bench: jog + send cyclic 0x77F (node-127 HB)
-  then stop it → pump estops + PRE-OP within timeout; confirmed NO false trip
-  before first HB seen (consumer sits in HBCONS_INIT until active). Committed
-  on branch pump-heartbeat-guard. REMAINING: optional high-rate decel-caveat
-  test; propagate this firmware change awareness to MIK (master must keep its
-  1 s HB up while commanding motion).
-- **NEXT (needs hardware/bench):** node ID settled (node 1, accepted).
-  (5) flash the node-1 image; validate
-  step-exact dose over CAN (deferred count test — the ONLY unproven path,
-  gdb-call couldn't start TIM1) + continuous run/stop/quickstop regression +
-  pause/resume + abort + heartbeat-lost runaway (Q3). Then commit; propagate the
-  EDS to CANOpenGateway `bridge/devices/` + bridge image rebuild; update MIK
-  (`docs/MIK_INTEGRATION_BRIEF.md` is the FE contract). Validation checklist:
-  docs/PUMP_DOSE_TRANSFER_PLAN.md.
-- **PLANNED, direction settled 2026-08-12: strip dosing engine from pump
-  firmware → "dumb pump" step-counter model.** Plan: `PUMP_DOSE_TRANSFER_PLAN.md`
-  (rewritten 2026-08-12). MIK owns ALL ml math + tubing calibration; pump
-  speaks only steps + steps/s (0x6042/0x6043 change UNITS ml/min→steps/s;
-  0x2200 + 0x2300-0x2305 deleted; new TargetSteps/StepsRemaining; RPDO1 =
-  CW+StepRate+TargetSteps = one atomic 8-byte frame). Firmware gains a
-  small primitive: run N steps at rate R, ISR-decremented, decel-ramp-aware
-  auto-stop (self-terminating dose = better runaway guard than old timeout).
-  Still open before implementation: Q3 heartbeat bench test, Q4 index
-  naming, stale-CW-after-complete ownership. EDS changes batch with
-  fault-feedback Phase 2 objects into ONE regen cycle (~400 lines of dose
-  state out of motor_control.c).
+- **Dose-strip refactor → "dumb pump" step-counter: COMPLETE + HW-VALIDATED +
+  on main (pushed 2026-08-24).** motor_control.c 1559→1301 (dose engine gone);
+  MIK owns all ml/tubing math. Commits: 19b0ede (EDS regen), 1f89a6f (firmware),
+  4ef6b5e (Q3 HB), 79b4e7e (docs); main==origin/main. Pump at node 1 (master on
+  a HIGH node id, so the old node-1 HB collision is moot). Plan/checklist:
+  `docs/PUMP_DOSE_TRANSFER_PLAN.md`. FE contract: `docs/MIK_INTEGRATION_BRIEF.md`
+  + `docs/PUMP_FE_CONTROL_BRIEF.md` (operations; the latter is UNTRACKED/uncommitted).
+  OD now: RPDO1=CW(0x6040)+StepRate(0x2600 i16, sign=dir)+TargetSteps(0x2601 u32,
+  0=continuous), 8B; TPDO1=SW(0x6041)+ActualStepRate(0x2602), 4B; TPDO2=
+  PumpState(0x2400)+ErrReg(0x1001)+StepsRemaining(0x2603), 6B; fault 0x2500-0x2503
+  SDO-only. Deleted 0x2200/0x2300-0x2305/0x6042/0x6043/0x2100. Validated end-to-end
+  (continuous, normal/quick stop, disable, NMT, counted exact-N, pause/resume,
+  CW-edge re-arm, HB runaway; no faults). Traces on Samsung T5:
+  cantrace-dosingstrip1/2/3 + consumerHB-test1. EDS/DCF also propagated to the
+  gateway repo by Dakota.
+- **Dose-strip DURABLE GOTCHAS (read before touching pump command handling):**
+  • **RPDO1 is SYNCHRONOUS (TType 1)** → the stack re-copies the buffered frame
+    (incl. TargetSteps) into the process image every SYNC (mcop.c:1431). So
+    starting/re-starting ANY run needs a **ControlWord EDGE** (0x0007→0x000F);
+    TargetSteps alone can't signal "fresh command." The `run_consumed` latch (set
+    on TARGET_REACHED) is cleared by a CW edge ONLY. consume-on-latch
+    SetTargetSteps(0) is futile under sync-RPDO (kept only as event-driven
+    defense). This is THE re-arm rule — mirrored in the FE brief.
+  • **Rate path**: motor_control converts steps/s→RPM and drives the validated
+    Stepper_SetSpeedRPM ramp; native Stepper_SetStepRate/ARR-direct is DEFERRED.
+    Consequence: RPM quantization remains and ActualStepRate is an RPM round-trip
+    (exact only at rates mapping to whole RPM). Stripping RPM is a separate future
+    change needing its own ramp re-validation.
+  • **Pause/resume**: HALT (0x010F) captures Stepper_GetStepsRemaining() into
+    motor_ctrl.paused_steps_remaining BEFORE decel; resume (0x000F) restarts that
+    held count (does NOT re-read OD TargetSteps). Exact at low (instant-stop,
+    ARR>700) rates; slight OVER-deliver at high rates (decel steps emitted but not
+    re-counted).
+  • **Fault-feedback Phase 2 DONE** (landed with dose strip): main.c writes 0x2500
+    TMCInitStatus + 0x2501 FailedStep AFTER MCOUSER_ResetCommunication (its
+    UpdateSystemFromOD can touch the PI); MotorControl_EnterFault writes 0x2502
+    LastDrvStatus + 0x2503 FaultSource; fault reset clears them. Fault-plan Phase 3
+    (MIK app layer) still future.
+- **Q3 heartbeat-lost runaway backstop: DONE + HW-VALIDATED + pushed
+  (commit 4ef6b5e).** MCOP_InitHBConsumer(1, 127, 2500) armed in
+  MCOUSER_ResetCommunication (user_STM32.c) — watches master node 127's 1 s HB
+  (COB-ID 0x77F), 2500 ms timeout; armed in firmware (NOT the 0x1016 OD default →
+  no regen), re-arms on every comm reset. On loss: MCOUSER_HeartbeatLost →
+  EmergencyStop (estop + de-energize) → PRE-OP. **ABORT-NOW** policy (motion-state
+  based → also aborts a dose in progress = partial volume; revisit "let bounded
+  dose finish" if wanted). No false trip at boot: consumer sits in HBCONS_INIT
+  until it sees the first HB — lost only fires from ACTIVE (mcop.c:1664).
+  MIK REQUIREMENT: master must keep its 1 s HB alive the whole time it commands
+  motion (>2.5 s gap mid-run → estop + PRE-OP, needs re-establish + NMT-start).
+- **Dose-strip / pump REMAINING (all optional / non-blocking):** commit the FE
+  brief `docs/PUMP_FE_CONTROL_BRIEF.md` (currently untracked); optional high-rate
+  decel-caveat test (StepRate 2400 sps → observe pause/resume over-deliver);
+  native steps/s rate path (drops the RPM hop; needs ramp re-validation); MIK
+  app-layer integration (fault-plan Phase 3).
 - Pump logging = RTT (`probe-rs attach --chip STM32G431KBTx build/pump.elf`);
   console noise: `[STEPPER]` step-rate block prints 1/s — set
   DBG_STEPPER_ENABLE 0 for quieter sessions (timer proven correct). Known
