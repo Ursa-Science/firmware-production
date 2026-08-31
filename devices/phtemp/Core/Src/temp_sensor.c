@@ -61,8 +61,7 @@ typedef struct {
 
 	/* Readings */
 	int16_t raw_value; /**< Raw 16-bit DS18B20 register             */
-	int16_t value; /**< Temperature in °C × 10 (with offset)    */
-	int16_t offset; /**< User offset in °C × 10 (from 0x2210)    */
+	int16_t value; /**< Temperature in °C × 10 (raw, no trim)   */
 	uint8_t signal_quality; /**< 0-100%                                  */
 
 	/* Init flag */
@@ -246,7 +245,6 @@ HAL_StatusTypeDef Temp_Init(GPIO_TypeDef *port, uint16_t pin) {
 	ts.value = TEMP_DEFAULT_VALUE;
 	ts.raw_value = 0;
 	ts.signal_quality = 0;
-	ts.offset = 0;
 	ts.error_count = 0;
 	ts.initialized = false;
 
@@ -410,15 +408,11 @@ HAL_StatusTypeDef Temp_ReadResult(void) {
 	 * Use integer arithmetic: (raw * 10 + 8) / 16  (with rounding) */
 	int16_t temp_x10 = (int16_t) (((int32_t) raw * 10 + 8) / 16);
 
-	/* Apply user offset */
-	temp_x10 += ts.offset;
-
 	ts.value = temp_x10;
 	ts.state = TEMP_STATE_READY;
 
-	DBG_PRINT_V(TEMP, "ReadResult: raw=%d, temp=%d.%d C (offset=%d)", raw,
-			temp_x10 / 10, (temp_x10 >= 0 ? temp_x10 : -temp_x10) % 10,
-			ts.offset);
+	DBG_PRINT_V(TEMP, "ReadResult: raw=%d, temp=%d.%d C", raw, temp_x10 / 10,
+			(temp_x10 >= 0 ? temp_x10 : -temp_x10) % 10);
 
 	return HAL_OK;
 }
@@ -437,12 +431,6 @@ int16_t Temp_GetRawValue(void) {
 
 uint8_t Temp_GetSignalQuality(void) {
 	return ts.signal_quality;
-}
-
-void Temp_SetOffset(int16_t offset) {
-	ts.offset = offset;
-	DBG_PRINT(TEMP, "SetOffset: %d (%d.%d C)", offset, offset / 10,
-			(offset >= 0 ? offset : -offset) % 10);
 }
 
 void Temp_ClearError(void) {

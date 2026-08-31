@@ -112,14 +112,6 @@ int16_t Temp_GetRawValue(void);
 uint8_t Temp_GetSignalQuality(void);
 
 /**
- * @brief  Set temperature offset correction
- * @param  offset  Offset in °C × 10 (e.g. -5 = -0.5°C correction)
- * @note   Applied to all subsequent readings.
- *         Written by CANopen master via object 0x2210.
- */
-void Temp_SetOffset(int16_t offset);
-
-/**
  * @brief  Clear error state and return to IDLE
  * @note   Next Temp_Process() call will attempt a new conversion.
  */

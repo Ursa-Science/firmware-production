@@ -5,14 +5,32 @@ Not a tutorial and not the running log — that is `BUILD_NOTES.md`, which holds
 detailed findings, gotchas, and history. Read this first, then BUILD_NOTES.md for
 depth. Keep this file terse and current; prune stale lines rather than appending.
 
-Last updated: 2026-08-24. NOTE: pump dose-strip refactor is COMPLETE,
-HW-VALIDATED, and on `main` (pushed). New step-counter OD wired; ~400-line
-dose engine removed (motor_control.c 1559→1301). Q3 heartbeat-lost runaway
-backstop also DONE + validated + pushed. Pump runs at node 1 (master/MIK on a
-HIGH node ID, so the old node-1 HB collision is moot). main HEAD = 79b4e7e,
-== origin/main. Working tree: only docs/PUMP_FE_CONTROL_BRIEF.md is UNTRACKED
-(intentionally uncommitted). Latest flashable/validated image built from
-79b4e7e (build/pump.bin).
+Last updated: 2026-08-25. Pump dose-strip refactor COMPLETE + HW-validated
+(step-counter OD; ~400-line dose engine removed; Q3 heartbeat-lost runaway
+backstop done). Pump runs at node 1 (master/MIK on a HIGH node ID → old node-1
+HB collision moot).
+
+SINCE 79b4e7e (not yet all committed): (1) **StepsRemaining fidelity fix**
+(Q1/Q7) in motor_control.c — 0x2603 latches true steps-not-delivered at every
+stop instead of the stepper counter zeroing on abort; Phase A DONE, Phase B
+(pause physical over-deliver) gated. See docs/PUMP_STEPSREMAINING_FIDELITY_PLAN.md.
+(2) **OD RevisionNumber bumped 0x00010001→0x00020000** (0x1018sub3 + [DeviceInfo])
+to advertise the steps-only OD; regenerated MicroCANopen sources in-tree; FW now
+reports **2.0.0**. Gateway bridge/devices/ copies NOT yet updated. Both changes
+VALIDATED in CAN trace 2026-08-25 (quick-stop holds StepsRemaining; dosing exact;
+~2.5s HB-loss watchdog fires).
+
+⚠️ **BLOCKER (HW, 2026-08-25): pump TMC2209 UART RX path dead** — PDN_UART idles
+at **1.46 V** (should be ~2.6 V), below V_IH → IFCNT reads fail, config written
+UNVERIFIED. Developed fault after a session of abrupt de-energizations; persists
+across a 10-min cold boot (∴ not firmware — no NVM). Divider math ⇒ new ~5 kΩ
+leak to GND on PDN = damaged pin, most likely the TMC2209 module. Motor still
+doses at correct 1/8 (pin-implied); SpreadCycle + current UNVERIFIED. Next step:
+remove module + re-measure PDN idle. Full writeup + test plan:
+docs/PUMP_TMC2209_RX_DEAD_DEBUG_TICKET.md.
+
+main HEAD = 79b4e7e, == origin/main. Latest flashable image = build/pump.bin
+(FW 2.0.0, built 2026-08-25).
 
 ---
 

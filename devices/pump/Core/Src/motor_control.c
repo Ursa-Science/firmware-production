@@ -145,6 +145,17 @@ typedef struct {
 	// low dosing rates that use the instant-stop bypass. See PUMP_DOSE_TRANSFER_PLAN.
 	uint32_t paused_steps_remaining;
 
+	// Delivered-volume fidelity (Q1): the value published to StepsRemaining
+	// (0x2603 / TPDO2). While RUNNING it tracks the live stepper countdown; when
+	// motion ends it is LATCHED to the true steps-not-delivered at the stopping
+	// instant and HELD until the next run arms. This decouples the reported value
+	// from the stepper's own counter, which Stepper_Stop()/Stepper_Disable() zero
+	// on abort/disable — without this latch an aborted partial dose would report
+	// StepsRemaining=0, i.e. full delivery. Captured BEFORE the stepper zeroes at
+	// every terminal path (quick-stop, disable, fault, e-stop); 0 on natural
+	// completion; reset to the new target when a fresh counted move arms.
+	uint32_t reported_steps_remaining;
+
 } MotorControl_t;
 
 /* Private variables ---------------------------------------------------------*/
@@ -243,6 +254,11 @@ static void MotorControl_EnterFault(bool diag_latched) {
 	motor_ctrl.pump_state = PUMPSTATE_FAULT;
 	motor_ctrl.fault_active = true;
 	motor_ctrl.error_register = error_reg;
+	// Latch true steps-not-delivered at the fault instant. The stepper counter is
+	// still valid here — the caller stops/zeroes it AFTER EnterFault returns, and a
+	// runaway ISR stop leaves steps_remaining intact. The MIK reads 0x2603 for
+	// delivered-at-fault (Q1).
+	motor_ctrl.reported_steps_remaining = Stepper_GetStepsRemaining();
 	motor_ctrl.paused_steps_remaining = 0;  // any in-flight counted move is void
 	gMCOConfig.error_register |= error_reg;
 
@@ -295,6 +311,8 @@ static void MotorControl_ProcessStepperEvents(void) {
 		}
 		if (events & STEPPER_EVT_TARGET_REACHED) {
 			motor_ctrl.run_consumed = true;
+			// Counted move delivered its exact pulse count — nothing remains (Q1).
+			motor_ctrl.reported_steps_remaining = 0;
 		}
 	}
 
@@ -360,6 +378,7 @@ bool MotorControl_Init(void) {
 	motor_ctrl.error_register = 0;
 	motor_ctrl.run_consumed = false;
 	motor_ctrl.paused_steps_remaining = 0;
+	motor_ctrl.reported_steps_remaining = 0;
 
 	return true;
 }
@@ -451,6 +470,10 @@ void MotorControl_EmergencyStop(void) {
 		// fire repeatedly and the heavy shutdown would repeat while already stopped.
 		if (Stepper_IsMoving()
 				|| motor_ctrl.current_state == MOTOR_STATE_RUNNING) {
+			// Latch true remaining BEFORE the stepper zeroes it, so the last TPDO2
+			// before the node drops to PRE-OP reflects delivered-at-loss (Q1: MIK's
+			// "best estimate" on heartbeat loss).
+			motor_ctrl.reported_steps_remaining = Stepper_GetStepsRemaining();
 			Stepper_Stop();
 			Stepper_Disable();
 		}
@@ -482,6 +505,7 @@ void MotorControl_Reset(void) {
 		motor_ctrl.current_state = MOTOR_STATE_DISABLED;
 		motor_ctrl.run_consumed = false;
 		motor_ctrl.paused_steps_remaining = 0;
+		motor_ctrl.reported_steps_remaining = 0;
 		last_known_step_rate = 0;
 
 		// Reset all one-shot log flags on NMT reset
@@ -560,6 +584,7 @@ static bool HandleFaultReset(uint16_t rising_edges) {
 		gMCOConfig.error_register &= (uint8_t) ~ERREG_MOTOR_BITS;
 		motor_ctrl.run_consumed = false;
 		motor_ctrl.paused_steps_remaining = 0;
+		motor_ctrl.reported_steps_remaining = 0;  // fault cleared — no active dose
 
 		// Clear the Phase 2 fault diagnostics (0x2502/0x2503) to their idle values
 		ProcImg_SetFaultSource(FAULT_SRC_NONE);
@@ -583,6 +608,9 @@ static bool HandleQuickStop(uint16_t falling_edges, uint16_t control_word) {
 	if (falling_edges & CONTROLWORD_QUICKSTOP) {
 		DBG_STATE(MOTOR,
 				"ACTION: QUICKSTOP (immediate stop + de-energize - bit 2: 1→0)");
+		// Latch true steps-not-delivered BEFORE Stepper_Stop() zeroes the counter,
+		// so the MIK reads delivered-at-abort from 0x2603 instead of a false 0 (Q1).
+		motor_ctrl.reported_steps_remaining = Stepper_GetStepsRemaining();
 		Stepper_Stop();
 		Stepper_Disable(); // QUICK_STOP: Full de-energization (EN=HIGH, coils off)
 		motor_ctrl.current_state = MOTOR_STATE_QUICKSTOPPING;
@@ -748,6 +776,11 @@ static void ExecuteExitActions(MotorState_t target_state) {
 		// captured. Aborts (→QUICKSTOPPING/DISABLED) skip this and clear it.
 		if (target_state == MOTOR_STATE_ENABLED_STOPPED) {
 			motor_ctrl.paused_steps_remaining = Stepper_GetStepsRemaining();
+			// Hold the reported remaining at the paused count so 0x2603 reflects
+			// what's left mid-dose (Q1). NOTE: this is the decel-start count; the
+			// physical over-delivery of the ramp-down steps on resume (Q7) is NOT
+			// addressed here — that is the gated Phase B.
+			motor_ctrl.reported_steps_remaining = motor_ctrl.paused_steps_remaining;
 			if (motor_ctrl.paused_steps_remaining > 0) {
 				DBG_STATE(MOTOR, "HALT mid-move - %lu steps held for resume",
 						(unsigned long) motor_ctrl.paused_steps_remaining);
@@ -781,6 +814,10 @@ static void ExecuteEntryActions(MotorState_t target_state) {
 	case MOTOR_STATE_DISABLED:
 		// Entering DISABLED - disable driver
 		DBG_STATE(MOTOR, "ACTION: Disabling motor driver");
+		// Latch true steps-not-delivered BEFORE the stepper is zeroed, so a
+		// disable mid-dose reports delivered-at-abort on 0x2603, not a false 0 (Q1).
+		// (Already-stopped entries read the frozen/paused count or 0 — both correct.)
+		motor_ctrl.reported_steps_remaining = Stepper_GetStepsRemaining();
 		if (Stepper_IsMoving()) {
 			Stepper_Stop();
 		}
@@ -850,6 +887,11 @@ static void ExecuteEntryActions(MotorState_t target_state) {
 				DBG_STATE(MOTOR, "CONTINUOUS jog (TargetSteps=0)");
 			}
 		}
+
+		// Seed the reported remaining for this move (0 for a continuous jog).
+		// UpdateProcessImage then tracks it live from the stepper counter while
+		// RUNNING; this seed just avoids a one-cycle stale value at arm (Q1).
+		motor_ctrl.reported_steps_remaining = steps;
 
 		DBG_STATE(MOTOR,
 				"STARTUP DIAG: rate=%d steps/s, mag=%u, dir=%s, rpm=%u, steps=%lu, ARR=%lu",
@@ -1056,10 +1098,18 @@ static void MotorControl_UpdateProcessImage(void) {
 		ProcImg_SetErrorRegister(0x00);
 	}
 
-	// StepsRemaining (0x2603 - TPDO2): live countdown of the active step-counted
-	// move (0 for a continuous jog or when idle). The MIK derives delivered
-	// volume as (TargetSteps − remaining) / steps_per_ml.
-	ProcImg_SetStepsRemaining(Stepper_GetStepsRemaining());
+	// StepsRemaining (0x2603 - TPDO2): the MIK derives delivered volume as
+	// (TargetSteps − remaining) / steps_per_ml, so this MUST equal the true
+	// steps-not-delivered at rest. While RUNNING, track the live stepper countdown;
+	// otherwise publish the value latched at the stopping instant (Q1). Publishing
+	// the raw live counter when stopped would report 0 after an abort — because
+	// Stepper_Stop()/Stepper_Disable() zero the counter — i.e. a partial dose would
+	// look fully delivered. The terminal paths (quick-stop, disable, fault, e-stop)
+	// capture the true remaining BEFORE the stepper is zeroed; completion sets 0.
+	if (motor_ctrl.current_state == MOTOR_STATE_RUNNING) {
+		motor_ctrl.reported_steps_remaining = Stepper_GetStepsRemaining();
+	}
+	ProcImg_SetStepsRemaining(motor_ctrl.reported_steps_remaining);
 }
 
 

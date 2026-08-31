@@ -9,20 +9,21 @@
  *          - Delta-threshold TPDO triggering for TPDO1 (measurements)
  *            and TPDO2 (status)
  *
+ *          "Dumb module" (docs/PHTEMP_REFACTOR_PLAN.md): raw electrode mV +
+ *          temperature + health only. No pH/Nernst/calibration on-module —
+ *          the MIK owns all of that and its persistence.
+ *
  *          SDO-readable objects:
- *            0x6000 pHValue            (UINT16, pH × 100)
+ *            0x6003 pHMillivolts       (UINT16, mV — primary electrode output)
  *            0x6001 pHSignalQuality    (UINT8, 0-100%)
  *            0x6002 pHSensorStatus     (UINT8, pH_State_t)
- *            0x6010 Temperature        (INT16, °C × 10)
+ *            0x6010 Temperature        (INT16, °C × 10, raw)
  *            0x6011 TempSignalQuality  (UINT8, 0-100%)
  *            0x6012 TempSensorStatus   (UINT8, Temp_State_t)
- *            0x6040 ControlWord        (UINT16, writable)
+ *            0x6040 ControlWord        (UINT16, writable — fault reset)
  *            0x6041 StatusWord         (UINT16, read-only)
- *            0x2200 CalibrationCommand (UINT8, WO from master)
- *            0x2201 CalibrationStatus  (UINT8, RO)
- *            0x2210 TempOffset         (INT16, °C × 10, writable)
  *            0x2300 SensorStatus       (UINT8, bitfield)
- *            0x2400 pHDeltaThreshold   (UINT16, pH × 100)
+ *            0x2400 MillivoltDeltaThreshold (UINT16, mV)
  *            0x2401 TempDeltaThreshold (INT16, °C × 10)
  *            0x2402 StatusDeltaThreshold (UINT8, bit-change)
  *
@@ -90,11 +91,9 @@ static struct {
 
 	/* Temperature sensor tracking */
 	bool temp_initialized;
-	int16_t last_applied_offset; /**< Track offset to detect SDO writes */
 
-	/* pH sensor tracking */
+	/* pH (electrode mV) sensor tracking */
 	bool ph_initialized;
-	uint8_t last_cal_command; /**< Track cal command to detect SDO writes */
 
 	/* CiA 404 state machine */
 	uint32_t warmup_start_ms; /**< Timestamp when WARMING_UP entered */
@@ -102,7 +101,7 @@ static struct {
 	uint16_t last_status_word; /**< For delta trigger comparison */
 
 	/* Delta-threshold TPDO tracking */
-	uint16_t last_tpdo_ph; /**< Last pH value sent via TPDO1 */
+	uint16_t last_tpdo_mv; /**< Last electrode mV sent via TPDO1 */
 	int16_t last_tpdo_temp; /**< Last temp value sent via TPDO1 */
 	uint8_t last_tpdo_status; /**< Last SensorStatus sent via TPDO2 */
 
@@ -114,7 +113,6 @@ static struct {
 /* Private function prototypes -----------------------------------------------*/
 static void SensorControl_HandleMCOEvent(const MCO_Event_t *event);
 static void SensorControl_UpdateProcessImage(void);
-static void SensorControl_CheckCalibrationCommand(void);
 static uint16_t SensorControl_GenerateStatusWord(void);
 static void SensorControl_ProcessControlWord(uint16_t control_word);
 static void SensorControl_CheckDeltaTrigger(void);
@@ -127,11 +125,9 @@ bool SensorControl_Init(void) {
 	sensor_ctrl.initialized = true;
 	sensor_ctrl.temp_initialized = false;
 	sensor_ctrl.ph_initialized = false;
-	sensor_ctrl.last_applied_offset = 0;
-	sensor_ctrl.last_cal_command = PH_CAL_CMD_NONE;
 	sensor_ctrl.last_control_word = 0;
 	sensor_ctrl.last_status_word = 0;
-	sensor_ctrl.last_tpdo_ph = 0;
+	sensor_ctrl.last_tpdo_mv = 0;
 	sensor_ctrl.last_tpdo_temp = 0;
 	sensor_ctrl.last_tpdo_status = 0;
 
@@ -174,22 +170,13 @@ void SensorControl_Process(void) {
 
 	/* ── Always tick sensor drivers (they need processing regardless) ── */
 
-	/* Temperature sensor: check for offset writes, then process */
+	/* Temperature sensor: report raw °C×10 (MIK owns any per-probe trim) */
 	if (sensor_ctrl.temp_initialized) {
-		int16_t offset = ProcImg_GetTempOffset();
-		if (offset != sensor_ctrl.last_applied_offset) {
-			Temp_SetOffset(offset);
-			sensor_ctrl.last_applied_offset = offset;
-		}
 		Temp_Process();
 	}
 
-	/* pH sensor: feed temperature compensation, then process */
+	/* Electrode ADC: acquire raw millivolts (MIK owns pH/Nernst/cal) */
 	if (sensor_ctrl.ph_initialized) {
-		if (sensor_ctrl.temp_initialized
-				&& Temp_GetState() == TEMP_STATE_READY) {
-			pH_SetTemperature(Temp_GetValue());
-		}
 		pH_Process();
 	}
 
@@ -241,11 +228,6 @@ void SensorControl_Process(void) {
 	}
 
 	case SENSOR_STATE_RUNNING:
-		/* Check for calibration commands from master (0x2200) */
-		if (sensor_ctrl.ph_initialized) {
-			SensorControl_CheckCalibrationCommand();
-		}
-
 		/* Delta-threshold TPDO triggering */
 		SensorControl_CheckDeltaTrigger();
 
@@ -294,8 +276,7 @@ void SensorControl_Reset(void) {
 	}
 	sensor_ctrl.current_state = SENSOR_STATE_DISABLED;
 	sensor_ctrl.last_control_word = 0;
-	sensor_ctrl.last_cal_command = PH_CAL_CMD_NONE;
-	sensor_ctrl.last_tpdo_ph = 0;
+	sensor_ctrl.last_tpdo_mv = 0;
 	sensor_ctrl.last_tpdo_temp = 0;
 	sensor_ctrl.last_tpdo_status = 0;
 	sensor_ctrl.last_status_word = 0;
@@ -332,8 +313,8 @@ void SensorControl_RunDiagnostics(void) {
 	uint8_t tq = Temp_GetSignalQuality();
 	Temp_State_t ts = Temp_GetState();
 
-	/* pH diagnostics */
-	uint16_t ph = pH_GetValue();
+	/* Electrode (mV) diagnostics */
+	uint16_t mv = pH_GetMillivolts();
 	uint8_t pq = pH_GetSignalQuality();
 	pH_State_t ps = pH_GetState();
 
@@ -341,10 +322,9 @@ void SensorControl_RunDiagnostics(void) {
 	uint16_t sw = sensor_ctrl.last_status_word;
 
 	DBG_PRINT(SENSOR,
-			"DIAG: state=%d SW=0x%04X | temp=%d.%d C q=%u%% s=%d | pH=%u.%02u q=%u%% s=%d",
+			"DIAG: state=%d SW=0x%04X | temp=%d.%d C q=%u%% s=%d | mV=%u q=%u%% s=%d",
 			sensor_ctrl.current_state, sw, temp / 10,
-			(temp >= 0 ? temp : -temp) % 10, tq, ts, ph / 100, ph % 100, pq,
-			ps);
+			(temp >= 0 ? temp : -temp) % 10, tq, ts, mv, pq, ps);
 }
 
 SensorState_t SensorControl_GetState(void) {
@@ -368,11 +348,6 @@ static uint16_t SensorControl_GenerateStatusWord(void) {
 	/* Bit 1: Temperature sensor ready (active, not idle/error) */
 	if (TEMP_IS_ACTIVE()) {
 		sw |= SW_TEMP_READY;
-	}
-
-	/* Bit 2: Calibration in progress */
-	if (sensor_ctrl.ph_initialized && pH_GetState() == PH_STATE_CALIBRATING) {
-		sw |= SW_CALIBRATING;
 	}
 
 	/* Bit 3: General fault */
@@ -408,8 +383,7 @@ static uint16_t SensorControl_GenerateStatusWord(void) {
  * @param  control_word  Current ControlWord read from process image (0x6040)
  * @note   Detects rising edges (0→1 transitions) and dispatches:
  *         - Bit 7: Fault reset → clear errors, state → DISABLED
- *         - Bit 0: pH calibration → read command from 0x2200, execute
- *         - Bit 1: Temp calibration → read offset from 0x2210, apply
+ *         (Calibration ControlWord bits are gone — the MIK owns calibration.)
  */
 static void SensorControl_ProcessControlWord(uint16_t control_word) {
 	/* Detect rising edges */
@@ -420,7 +394,7 @@ static void SensorControl_ProcessControlWord(uint16_t control_word) {
 		return; /* No new edges */
 	}
 
-	/* Priority 1: Fault reset (bit 7) */
+	/* Fault reset (bit 7) */
 	if (rising & CW_FAULT_RESET) {
 		DBG_STATE(SENSOR, "ControlWord: FAULT_RESET");
 		sensor_ctrl.current_state = SENSOR_STATE_DISABLED;
@@ -432,65 +406,35 @@ static void SensorControl_ProcessControlWord(uint16_t control_word) {
 		if (sensor_ctrl.ph_initialized) {
 			pH_ClearError();
 		}
-		return; /* Fault reset takes priority */
-	}
-
-	/* Priority 2: pH calibration (bit 0) */
-	if (rising & CW_START_PH_CAL) {
-		if (sensor_ctrl.ph_initialized) {
-			uint8_t cmd = ProcImg_GetCalibrationCommand();
-			DBG_PRINT(CAL, "ControlWord: START_PH_CAL, cmd=0x%02X", cmd);
-
-			ProcImg_SetCalibrationStatus(PH_CAL_STATUS_BUSY);
-			HAL_StatusTypeDef result = pH_Calibrate(cmd);
-
-			if (result == HAL_OK) {
-				ProcImg_SetCalibrationStatus(PH_CAL_STATUS_OK);
-				DBG_PRINT(CAL, "pH cal OK");
-			} else {
-				ProcImg_SetCalibrationStatus(PH_CAL_STATUS_FAIL);
-				DBG_ERROR(CAL, "pH cal FAILED");
-			}
-		}
-	}
-
-	/* Priority 3: Temp calibration / offset (bit 1) */
-	if (rising & CW_START_TEMP_CAL) {
-		if (sensor_ctrl.temp_initialized) {
-			int16_t offset = ProcImg_GetTempOffset();
-			Temp_SetOffset(offset);
-			sensor_ctrl.last_applied_offset = offset;
-			DBG_PRINT(CAL, "ControlWord: TEMP_CAL, offset=%d", offset);
-		}
 	}
 }
 
 /**
  * @brief  Check delta thresholds and trigger TPDOs if exceeded
- * @note   Compares current pH/temp/status against last TPDO'd values.
- *         TPDO1 (0x184): pHValue + Temperature (measurement data)
+ * @note   Compares current mV/temp/status against last TPDO'd values.
+ *         TPDO1 (0x184): pHMillivolts + Temperature (measurement data)
  *         TPDO2 (0x284): SensorStatus + Quality + Error + StatusWord
  */
 static void SensorControl_CheckDeltaTrigger(void) {
 	bool trigger_tpdo1 = false;
 	bool trigger_tpdo2 = false;
 
-	/* ── TPDO1: pH + Temperature delta check ──────────────────────── */
-	uint16_t cur_ph = pH_GetValue();
+	/* ── TPDO1: electrode mV + Temperature delta check ────────────── */
+	uint16_t cur_mv = pH_GetMillivolts();
 	int16_t cur_temp = Temp_GetValue();
 
-	uint16_t ph_threshold = ProcImg_GetpHDeltaThreshold();
+	uint16_t mv_threshold = ProcImg_GetMillivoltDeltaThreshold();
 	int16_t temp_threshold = ProcImg_GetTempDeltaThreshold();
 
-	/* pH delta (unsigned comparison) */
-	if (ph_threshold > 0) {
-		uint16_t ph_diff;
-		if (cur_ph >= sensor_ctrl.last_tpdo_ph) {
-			ph_diff = cur_ph - sensor_ctrl.last_tpdo_ph;
+	/* mV delta (unsigned comparison) */
+	if (mv_threshold > 0) {
+		uint16_t mv_diff;
+		if (cur_mv >= sensor_ctrl.last_tpdo_mv) {
+			mv_diff = cur_mv - sensor_ctrl.last_tpdo_mv;
 		} else {
-			ph_diff = sensor_ctrl.last_tpdo_ph - cur_ph;
+			mv_diff = sensor_ctrl.last_tpdo_mv - cur_mv;
 		}
-		if (ph_diff >= ph_threshold) {
+		if (mv_diff >= mv_threshold) {
 			trigger_tpdo1 = true;
 		}
 	}
@@ -507,9 +451,9 @@ static void SensorControl_CheckDeltaTrigger(void) {
 
 	if (trigger_tpdo1) {
 		MCO_TriggerTPDO(1); /* TPDO1 (1-indexed per MCO API) */
-		sensor_ctrl.last_tpdo_ph = cur_ph;
+		sensor_ctrl.last_tpdo_mv = cur_mv;
 		sensor_ctrl.last_tpdo_temp = cur_temp;
-		DBG_PRINT_V(SENSOR, "TPDO1 delta trigger: pH=%u temp=%d", cur_ph,
+		DBG_PRINT_V(SENSOR, "TPDO1 delta trigger: mV=%u temp=%d", cur_mv,
 				cur_temp);
 	}
 
@@ -520,13 +464,10 @@ static void SensorControl_CheckDeltaTrigger(void) {
 	/* Build SensorStatus bitfield for comparison (must match UpdateProcessImage) */
 	uint8_t cur_status = 0;
 	if (PH_IS_ACTIVE()) {
-		cur_status |= 0x01; /* bit 0: pH OK */
+		cur_status |= 0x01; /* bit 0: electrode OK */
 	}
 	if (TEMP_IS_ACTIVE()) {
 		cur_status |= 0x02; /* bit 1: temp OK */
-	}
-	if (sensor_ctrl.ph_initialized && pH_GetState() == PH_STATE_CALIBRATING) {
-		cur_status |= 0x04; /* bit 2: calibrating */
 	}
 	if (sensor_ctrl.current_state == SENSOR_STATE_FAULT) {
 		cur_status |= 0x08; /* bit 3: fault */
@@ -562,44 +503,6 @@ static void SensorControl_CheckDeltaTrigger(void) {
 }
 
 /**
- * @brief  Check for calibration commands written by master via SDO (0x2200)
- * @note   Detects rising edge (command change from NONE) and dispatches.
- *         Master writes command byte, firmware executes and reports status
- *         via 0x2201. Master must write 0x00 before next command.
- */
-static void SensorControl_CheckCalibrationCommand(void) {
-	uint8_t cmd = ProcImg_GetCalibrationCommand();
-
-	/* Only trigger on change from last seen value */
-	if (cmd == sensor_ctrl.last_cal_command) {
-		return;
-	}
-	sensor_ctrl.last_cal_command = cmd;
-
-	/* Ignore transition back to NONE (master clearing the command) */
-	if (cmd == PH_CAL_CMD_NONE) {
-		return;
-	}
-
-	DBG_PRINT(CAL, "Cal command received: 0x%02X", cmd);
-
-	/* Set status to BUSY */
-	ProcImg_SetCalibrationStatus(PH_CAL_STATUS_BUSY);
-
-	/* Execute calibration */
-	HAL_StatusTypeDef result = pH_Calibrate(cmd);
-
-	/* Update calibration status */
-	if (result == HAL_OK) {
-		ProcImg_SetCalibrationStatus(PH_CAL_STATUS_OK);
-		DBG_PRINT(CAL, "Cal command 0x%02X completed OK", cmd);
-	} else {
-		ProcImg_SetCalibrationStatus(PH_CAL_STATUS_FAIL);
-		DBG_ERROR(CAL, "Cal command 0x%02X FAILED", cmd);
-	}
-}
-
-/**
  * @brief  Write current sensor readings + status into MCO process image
  * @note   Called every SensorControl_Process() iteration.
  *         The MCO stack serves these values to SDO reads and TPDO mappings.
@@ -622,11 +525,9 @@ static void SensorControl_UpdateProcessImage(void) {
 		}
 	}
 
-	/* ── pH objects ───────────────────────────────────────────── */
-	ProcImg_SetpHValue(pH_GetValue());
+	/* ── Electrode (mV) objects ───────────────────────────────── */
 	ProcImg_SetpHMillivolts(pH_GetMillivolts());
 	ProcImg_SetpHSensorStatus((uint8_t) pH_GetState());
-	ProcImg_SetCalibrationMode((uint8_t) pH_GetCalMode());
 
 	/* pH quality: only update process image if change > hysteresis */
 	{
@@ -641,9 +542,6 @@ static void SensorControl_UpdateProcessImage(void) {
 		}
 	}
 
-	/* ── Electrode status (0x2220) ────────────────────────────── */
-	ProcImg_SetElectrodeStatus(pH_GetElectrodeStatus());
-
 	/* ── StatusWord (0x6041) ──────────────────────────────────── */
 	uint16_t sw = SensorControl_GenerateStatusWord();
 	ProcImg_SetStatusWord(sw);
@@ -652,13 +550,10 @@ static void SensorControl_UpdateProcessImage(void) {
 	/* ── SensorStatus bitfield (0x2300) ──────────────────────── */
 	uint8_t sensor_status = 0;
 	if (PH_IS_ACTIVE()) {
-		sensor_status |= 0x01; /* bit 0: pH OK */
+		sensor_status |= 0x01; /* bit 0: electrode OK */
 	}
 	if (TEMP_IS_ACTIVE()) {
 		sensor_status |= 0x02; /* bit 1: temp OK */
-	}
-	if (sensor_ctrl.ph_initialized && pH_GetState() == PH_STATE_CALIBRATING) {
-		sensor_status |= 0x04; /* bit 2: calibrating */
 	}
 	if (sensor_ctrl.current_state == SENSOR_STATE_FAULT) {
 		sensor_status |= 0x08; /* bit 3: fault */

@@ -33,19 +33,18 @@ typedef enum {
 	SENSOR_STATE_FAULT /**< Sensor error detected                   */
 } SensorState_t;
 
-/* StatusWord bit definitions (0x6041) — CiA 404 */
-#define SW_PH_READY         (1u << 0)   /**< pH sensor has valid reading       */
+/* StatusWord bit definitions (0x6041) — CiA 404
+ * Bit 2 (was SW_CALIBRATING) is retired — no on-module calibration. */
+#define SW_PH_READY         (1u << 0)   /**< Electrode has valid mV reading    */
 #define SW_TEMP_READY       (1u << 1)   /**< Temperature sensor has valid rdg  */
-#define SW_CALIBRATING      (1u << 2)   /**< Calibration in progress           */
 #define SW_FAULT            (1u << 3)   /**< General fault active              */
-#define SW_PH_FAULT         (1u << 4)   /**< pH sensor fault                   */
+#define SW_PH_FAULT         (1u << 4)   /**< Electrode/ADC fault               */
 #define SW_TEMP_FAULT       (1u << 5)   /**< Temperature sensor fault          */
 #define SW_WARMING_UP       (1u << 6)   /**< Post-boot warmup in progress      */
 #define SW_REMOTE           (1u << 9)   /**< NMT Operational (remote ready)    */
 
-/* ControlWord bit definitions (0x6040) */
-#define CW_START_PH_CAL     (1u << 0)   /**< Trigger pH calibration            */
-#define CW_START_TEMP_CAL   (1u << 1)   /**< Trigger temperature offset cal    */
+/* ControlWord bit definitions (0x6040)
+ * Bits 0/1 (was pH-cal / temp-cal) are retired — the MIK owns calibration. */
 #define CW_FAULT_RESET      (1u << 7)   /**< Clear fault, return to DISABLED   */
 
 /* Warmup timeout */
