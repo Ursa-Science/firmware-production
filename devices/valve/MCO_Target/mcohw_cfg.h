@@ -536,7 +536,7 @@ DEFINES: BASIC CAN COMMUNICATION
 Modify these for your application
 **************************************************************************/
 
-// Default CAN bitrate — driven by CAN_BITRATE_xxxK in main.h
+// CAN bitrate - from the CAN_BITRATE_xxxK symbol the build passes (URSA_CAN_BITRATE, see main.h)
 #if defined(CAN_BITRATE_1000K)
   #define CAN_BITRATE 1000
 #elif defined(CAN_BITRATE_800K)

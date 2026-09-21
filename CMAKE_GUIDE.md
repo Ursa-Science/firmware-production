@@ -33,7 +33,7 @@ cmake --preset default
                                          └─ each add_ursa_device() defines one .elf target PER NODE ID
                                             (<device>-nNN) + its .bin/.hex/size post-build step
 
-cmake --build --preset valve-n09  → compiles that target, emits build/valve-n09.{elf,bin,hex,map}
+cmake --build --preset valve-n09  → compiles that target, emits build/valve-n09-250k.{elf,bin,hex,map}
 ```
 
 The design goal behind all of it: **one build, one copy of the shared code, three
@@ -357,6 +357,41 @@ the node ID passed to the stack and the `[1014h]` readback.
 **Why no bare `pump` target:** so a node ID is always named at build and flash
 time, and a stale `build/pump.bin` can never be mistaken for current output.
 
+### 3.10 CAN bitrate — one bus-wide setting
+
+```cmake
+set(URSA_CAN_BITRATES 20 50 125 250 500 800 1000)
+set(URSA_CAN_BITRATE 250 CACHE STRING "CAN bus bitrate in kbit/s (...)")
+```
+
+Bitrate belongs to the **bus**, not to a node, so it is one cache variable rather
+than a per-device list. Configure fails on any value outside the list, which is
+exactly the set the FDCAN driver and `MX_FDCAN1_Init()` carry bit timing for
+(80 MHz kernel clock). Two things follow from the value:
+
+- every target gets `-DCAN_BITRATE_<n>K`. `main.h` used to hold an
+  "uncomment ONE" selector; it is now only a guarded 250k fallback for builds
+  that bypass CMake. The symbol drives both init paths: the CubeMX
+  `MX_FDCAN1_Init()` in `main.c` and, via `mcohw_cfg.h` → `CAN_BITRATE`, the
+  `MCO_DefaultResetCommunication()` call that re-initialises FDCAN for the stack.
+- `OUTPUT_NAME` becomes `<device>-nNN-<rate>k`, so the rate is in every
+  `.elf/.bin/.hex/.map` name. The **target** name stays `<device>-nNN`, which is
+  why build presets don't multiply per bitrate.
+
+The `default` configure preset pins 250 in its `cacheVariables`, so
+`cmake --preset default` always returns `build/` to 250k even if someone passed
+`-DURSA_CAN_BITRATE=...` earlier. Other rates use `can-<rate>k` presets with their
+own `build-<rate>k/` directory — no full-rebuild thrash when you hop between rates.
+
+**CANopen Architect's bitrate selector is inert here.** Comparing same-day exports
+at 50k/125k/500k/800k/1M showed it changes exactly two things: `CAN_BITRATE_DCF`
+in `stackinit.h` and `BaudRate=` in the DCF. The EDS, `pimg.h` and
+`entriesandreplies.h` are identical. `CAN_BITRATE_DCF` is only a fallback inside
+`MCO_Init()` for a bitrate argument of 0, which this firmware never passes (and
+`mco.c` does not include `stackinit.h`). Verified: forcing `CAN_BITRATE_DCF 1000`
+produces a byte-identical image. So, as with node IDs, never keep per-bitrate
+copies of the generated files.
+
 ---
 
 ## 4. The entry point — `CMakeLists.txt`
@@ -401,8 +436,11 @@ Usage:
 
 ```bash
 cmake --preset default          # configure once
-cmake --build --preset default   # build every device at every node ID
+cmake --build --preset default   # build every device at every node ID (250k)
 cmake --build --preset pump-n02  # build just one
+
+cmake --preset can-500k                              # a different bus speed...
+cmake --build --preset can-500k --target pump-n02    # ...lands in build-500k/
 ```
 
 ---

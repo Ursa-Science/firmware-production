@@ -7,14 +7,32 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "toolchainFile": "${sourceDir}/cmake/arm-none-eabi-gcc.cmake",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
-    }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "URSA_CAN_BITRATE": "250" }
+    },
+    { "name": "can-20k", "inherits": "default", "displayName": "All modules, 20 kbit/s bus",
+      "binaryDir": "${sourceDir}/build-20k", "cacheVariables": { "URSA_CAN_BITRATE": "20" } },
+    { "name": "can-50k", "inherits": "default", "displayName": "All modules, 50 kbit/s bus",
+      "binaryDir": "${sourceDir}/build-50k", "cacheVariables": { "URSA_CAN_BITRATE": "50" } },
+    { "name": "can-125k", "inherits": "default", "displayName": "All modules, 125 kbit/s bus",
+      "binaryDir": "${sourceDir}/build-125k", "cacheVariables": { "URSA_CAN_BITRATE": "125" } },
+    { "name": "can-500k", "inherits": "default", "displayName": "All modules, 500 kbit/s bus",
+      "binaryDir": "${sourceDir}/build-500k", "cacheVariables": { "URSA_CAN_BITRATE": "500" } },
+    { "name": "can-800k", "inherits": "default", "displayName": "All modules, 800 kbit/s bus",
+      "binaryDir": "${sourceDir}/build-800k", "cacheVariables": { "URSA_CAN_BITRATE": "800" } },
+    { "name": "can-1000k", "inherits": "default", "displayName": "All modules, 1000 kbit/s bus",
+      "binaryDir": "${sourceDir}/build-1000k", "cacheVariables": { "URSA_CAN_BITRATE": "1000" } }
   ],
   "buildPresets": [
     { "name": "default", "configurePreset": "default" },
     { "name": "valve-n09",  "configurePreset": "default", "targets": ["valve-n09"] },
     { "name": "pump-n01",   "configurePreset": "default", "targets": ["pump-n01"] },
     { "name": "pump-n02",   "configurePreset": "default", "targets": ["pump-n02"] },
-    { "name": "phtemp-n04", "configurePreset": "default", "targets": ["phtemp-n04"] }
+    { "name": "phtemp-n04", "configurePreset": "default", "targets": ["phtemp-n04"] },
+    { "name": "can-20k", "configurePreset": "can-20k" },
+    { "name": "can-50k", "configurePreset": "can-50k" },
+    { "name": "can-125k", "configurePreset": "can-125k" },
+    { "name": "can-500k", "configurePreset": "can-500k" },
+    { "name": "can-800k", "configurePreset": "can-800k" },
+    { "name": "can-1000k", "configurePreset": "can-1000k" }
   ]
 }

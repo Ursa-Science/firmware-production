@@ -22,6 +22,18 @@ n01/n09/n04 images byte-identical to pre-change main; pump-n02 differs from
 pump-n01 by 2 bytes (node ID + 1014h). pump-n02 NOT yet bench-validated.
 OrderCode stays URSA-PMP-001 for all pumps. Details: CMAKE_GUIDE.md §3.9.
 
+**CAN BITRATE = BUILD PARAMETER (2026-09-21, same branch):** bus-wide cache var
+`URSA_CAN_BITRATE` (20/50/125/250/500/800/1000; `default` preset pins 250) →
+`-DCAN_BITRATE_<n>K`; main.h "uncomment ONE" selector replaced by a guarded 250k
+fallback. Artifacts are now `<dev>-nNN-<rate>k.*` (e.g. build/pump-n02-250k.bin);
+targets/presets keep the `<dev>-nNN` name. Other rates: `cmake --preset can-500k`
+→ `build-500k/`. Architect's bitrate selector is INERT (only CAN_BITRATE_DCF in
+stackinit.h + DCF BaudRate=; proven byte-identical) — leave it at 250, never keep
+per-bitrate generated copies. Verified: 250k images byte-identical to 8f92013;
+500k build sets prescaler 10 + passes 500 to the stack. Non-250k rates NOT
+bench-validated. EDS claims BaudRate_10=1 but firmware has no 10k timing.
+Details: CMAKE_GUIDE.md §3.10.
+
 SINCE 79b4e7e (not yet all committed): (1) **StepsRemaining fidelity fix**
 (Q1/Q7) in motor_control.c — 0x2603 latches true steps-not-delivered at every
 stop instead of the stepper counter zeroing on abort; Phase A DONE, Phase B
@@ -41,7 +53,7 @@ doses at correct 1/8 (pin-implied); SpreadCycle + current UNVERIFIED. Next step:
 remove module + re-measure PDN idle. Full writeup + test plan:
 docs/PUMP_TMC2209_RX_DEAD_DEBUG_TICKET.md.
 
-main HEAD = 79b4e7e, == origin/main. Latest flashable image = build/pump-n01.bin
+main HEAD = 79b4e7e, == origin/main. Latest flashable image = build/pump-n01-250k.bin
 (FW 2.0.0, built 2026-08-25).
 
 ---
@@ -77,7 +89,7 @@ functionally equivalent to the CubeIDE build on real devices.
 ### pump TMC2209 UART — CLOSED 2026-08-07 (see TMC2209_UART_AUDIT.md for full record)
 - **Logging is now SEGGER RTT over SWD** (commit `28e2a3f`): same DBG_*/Log API,
   RTT channel 0, 4K buffer, PRIMASK lock. USART2 (PA2/PA3, PDN_UART net) is
-  TMC-only. View: `probe-rs attach --chip STM32G431KBTx build/pump-n01.elf` (works
+  TMC-only. View: `probe-rs attach --chip STM32G431KBTx build/pump-n01-250k.elf` (works
   with ST-LINK; JLinkRTTViewer with J-Link). NEVER attach a serial adapter to
   PA2/PA3 — a 5 V-logic adapter TX on that net kills comms and can damage the
   TMC PDN pin.
@@ -295,7 +307,7 @@ TWO before done.
   decel-caveat test (StepRate 2400 sps → observe pause/resume over-deliver);
   native steps/s rate path (drops the RPM hop; needs ramp re-validation); MIK
   app-layer integration (fault-plan Phase 3).
-- Pump logging = RTT (`probe-rs attach --chip STM32G431KBTx build/pump-n01.elf`);
+- Pump logging = RTT (`probe-rs attach --chip STM32G431KBTx build/pump-n01-250k.elf`);
   console noise: `[STEPPER]` step-rate block prints 1/s — set
   DBG_STEPPER_ENABLE 0 for quieter sessions (timer proven correct). Known
   cosmetic: first step-rate sample after a start straddles the accel ramp and

@@ -64,18 +64,24 @@ void Error_Handler(void);
 
 /* USER CODE BEGIN Private defines */
 
-/* ── FDCAN Bitrate Selector ──────────────────────────────────────────
- * Uncomment ONE line to select CAN bus bitrate.
- * This define is read by mcohw_cfg.h to set CAN_BITRATE for the MCO
- * stack, and by MX_FDCAN1_Init() for the CubeMX HAL call.
- * ─────────────────────────────────────────────────────────────────── */
-// #define CAN_BITRATE_1000K
-//#define CAN_BITRATE_500K
-// #define CAN_BITRATE_800K
+/* -- CAN bus bitrate ---------------------------------------------------
+ * Set by the build, NOT here: CMake passes exactly one CAN_BITRATE_xxxK from
+ * the URSA_CAN_BITRATE cache variable (default 250; see CMAKE_GUIDE.md 3.10).
+ * The symbol is read by MX_FDCAN1_Init() (main.c) and by mcohw_cfg.h, which
+ * turns it into CAN_BITRATE for the MCO stack. Timing assumes the 80 MHz
+ * FDCAN kernel clock (PLLQ).
+ *
+ * CANopen Architect's bitrate selector has no effect on this firmware: it only
+ * sets CAN_BITRATE_DCF in stackinit.h (unused here) and BaudRate= in the DCF.
+ *
+ * The fallback below only serves builds that bypass CMake (IDE indexers).
+ * --------------------------------------------------------------------- */
+#if !defined(CAN_BITRATE_1000K) && !defined(CAN_BITRATE_800K) && \
+    !defined(CAN_BITRATE_500K)  && !defined(CAN_BITRATE_250K) && \
+    !defined(CAN_BITRATE_125K)  && !defined(CAN_BITRATE_50K)  && \
+    !defined(CAN_BITRATE_20K)
 #define CAN_BITRATE_250K
-// #define CAN_BITRATE_125K
-// #define CAN_BITRATE_50K
-// #define CAN_BITRATE_20K
+#endif
 
 /* USER CODE END Private defines */
 

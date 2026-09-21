@@ -24,6 +24,18 @@ set(URSA_COMMON_DEFINES
     USE_LSS_SERVER=0
 )
 
+# CAN bus bitrate (kbit/s). A bus-wide property, so one value covers every target.
+# It reaches the code as a CAN_BITRATE_<n>K symbol (see devices/*/Core/Inc/main.h)
+# and is part of every artifact's file name. The list is exactly what the FDCAN
+# driver (mcohw_STM32FDHAL.c) and MX_FDCAN1_Init() carry bit timing for.
+set(URSA_CAN_BITRATES 20 50 125 250 500 800 1000)
+set(URSA_CAN_BITRATE 250 CACHE STRING "CAN bus bitrate in kbit/s (${URSA_CAN_BITRATES})")
+set_property(CACHE URSA_CAN_BITRATE PROPERTY STRINGS ${URSA_CAN_BITRATES})
+if(NOT URSA_CAN_BITRATE IN_LIST URSA_CAN_BITRATES)
+    message(FATAL_ERROR "URSA_CAN_BITRATE='${URSA_CAN_BITRATE}' is not one of: ${URSA_CAN_BITRATES}")
+endif()
+message(STATUS "URSA CAN bitrate: ${URSA_CAN_BITRATE} kbit/s")
+
 set(URSA_LINKER_SCRIPT "${CMAKE_CURRENT_LIST_DIR}/STM32G431KBTX_FLASH.ld")
 
 # Vendor + shared sources. These are compiled into EACH device target rather than
@@ -39,7 +51,9 @@ set(URSA_STARTUP "${URSA_ROOT}/shared/startup/startup_stm32g431kbtx.s")
 # add_ursa_device(<name> NODE_IDS <id> [<id>...])
 #   Expects devices/<name>/ to contain Core/{Inc,Src}, MCO_Target/, MCO_CiA401__User/.
 #   Defines one target per CANopen node ID, named <name>-nNN (e.g. pump-n02), each
-#   compiled with -DNODEID=<id>. That overrides the NODEID_DCF default baked into the
+#   compiled with -DNODEID=<id> and the bus-wide CAN_BITRATE_<n>K. Output files carry
+#   both: <name>-nNN-<rate>k.{elf,bin,hex,map}, e.g. pump-n02-250k.bin (the target name
+#   stays <name>-nNN so presets do not depend on the bitrate). NODEID overrides the NODEID_DCF default baked into the
 #   generated EDS/pimg.h (see nodecfg.h), so ONE set of CANopen Architect output
 #   serves every node ID - do not regenerate the OD per node. There is deliberately
 #   no bare <name> target: every artifact names the node it was built for.
@@ -72,6 +86,7 @@ endfunction()
 
 function(_ursa_device_target name target node_id)
     set(dev "${URSA_ROOT}/devices/${name}")
+    set(out "${target}-${URSA_CAN_BITRATE}k")
 
     file(GLOB dev_sources CONFIGURE_DEPENDS
          "${dev}/Core/Src/*.c"
@@ -102,6 +117,7 @@ function(_ursa_device_target name target node_id)
         ${URSA_COMMON_DEFINES}
         ${${name}_EXTRA_DEFINES}
         NODEID=${node_id}
+        CAN_BITRATE_${URSA_CAN_BITRATE}K
     )
 
     target_compile_options(${target} PRIVATE
@@ -121,19 +137,20 @@ function(_ursa_device_target name target node_id)
         --specs=nano.specs
         -static
         -Wl,--gc-sections
-        -Wl,-Map=$<TARGET_FILE_DIR:${target}>/${target}.map
+        -Wl,-Map=$<TARGET_FILE_DIR:${target}>/${out}.map
         -Wl,--start-group -lc -lm -Wl,--end-group
     )
     set_target_properties(${target} PROPERTIES
+        OUTPUT_NAME "${out}"
         SUFFIX ".elf"
         LINK_DEPENDS "${URSA_LINKER_SCRIPT}"
     )
 
     # Both .bin (for J-Link/ST-Link raw flashing) and .hex, plus a size report.
     add_custom_command(TARGET ${target} POST_BUILD
-        COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${target}> $<TARGET_FILE_DIR:${target}>/${target}.bin
-        COMMAND ${CMAKE_OBJCOPY} -O ihex   $<TARGET_FILE:${target}> $<TARGET_FILE_DIR:${target}>/${target}.hex
+        COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${target}> $<TARGET_FILE_DIR:${target}>/${out}.bin
+        COMMAND ${CMAKE_OBJCOPY} -O ihex   $<TARGET_FILE:${target}> $<TARGET_FILE_DIR:${target}>/${out}.hex
         COMMAND ${CMAKE_SIZE} $<TARGET_FILE:${target}>
-        COMMENT "Generating ${target}.bin / ${target}.hex"
+        COMMENT "Generating ${out}.bin / ${out}.hex"
     )
 endfunction()
