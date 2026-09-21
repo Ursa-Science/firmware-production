@@ -10,6 +10,18 @@ Last updated: 2026-08-25. Pump dose-strip refactor COMPLETE + HW-validated
 backstop done). Pump runs at node 1 (master/MIK on a HIGH node ID → old node-1
 HB collision moot).
 
+**NODE ID = BUILD PARAMETER (2026-09-21, branch build/node-id-parameter):**
+`add_ursa_device(<dev> NODE_IDS ...)` → one target per node, `<dev>-nNN`
+(pump-n01, pump-n02, valve-n09, phtemp-n04), each `-DNODEID=<id>` overriding
+NODEID_DCF via the existing `#if !defined(NODEID)` in nodecfg.h. NO bare
+pump/valve/phtemp targets or presets any more — old `build/pump.*` on disk is
+STALE, don't flash it. One canonical EDS/OD per device; NEVER regenerate per node
+(node-2 regen came out with stale RevisionNumber 0x00010001 — rejected, not
+imported). [1014h] readback re-pointed to NODEID in each procimg.h. Verified:
+n01/n09/n04 images byte-identical to pre-change main; pump-n02 differs from
+pump-n01 by 2 bytes (node ID + 1014h). pump-n02 NOT yet bench-validated.
+OrderCode stays URSA-PMP-001 for all pumps. Details: CMAKE_GUIDE.md §3.9.
+
 SINCE 79b4e7e (not yet all committed): (1) **StepsRemaining fidelity fix**
 (Q1/Q7) in motor_control.c — 0x2603 latches true steps-not-delivered at every
 stop instead of the stepper counter zeroing on abort; Phase A DONE, Phase B
@@ -29,7 +41,7 @@ doses at correct 1/8 (pin-implied); SpreadCycle + current UNVERIFIED. Next step:
 remove module + re-measure PDN idle. Full writeup + test plan:
 docs/PUMP_TMC2209_RX_DEAD_DEBUG_TICKET.md.
 
-main HEAD = 79b4e7e, == origin/main. Latest flashable image = build/pump.bin
+main HEAD = 79b4e7e, == origin/main. Latest flashable image = build/pump-n01.bin
 (FW 2.0.0, built 2026-08-25).
 
 ---
@@ -65,7 +77,7 @@ functionally equivalent to the CubeIDE build on real devices.
 ### pump TMC2209 UART — CLOSED 2026-08-07 (see TMC2209_UART_AUDIT.md for full record)
 - **Logging is now SEGGER RTT over SWD** (commit `28e2a3f`): same DBG_*/Log API,
   RTT channel 0, 4K buffer, PRIMASK lock. USART2 (PA2/PA3, PDN_UART net) is
-  TMC-only. View: `probe-rs attach --chip STM32G431KBTx build/pump.elf` (works
+  TMC-only. View: `probe-rs attach --chip STM32G431KBTx build/pump-n01.elf` (works
   with ST-LINK; JLinkRTTViewer with J-Link). NEVER attach a serial adapter to
   PA2/PA3 — a 5 V-logic adapter TX on that net kills comms and can damage the
   TMC PDN pin.
@@ -283,7 +295,7 @@ TWO before done.
   decel-caveat test (StepRate 2400 sps → observe pause/resume over-deliver);
   native steps/s rate path (drops the RPM hop; needs ramp re-validation); MIK
   app-layer integration (fault-plan Phase 3).
-- Pump logging = RTT (`probe-rs attach --chip STM32G431KBTx build/pump.elf`);
+- Pump logging = RTT (`probe-rs attach --chip STM32G431KBTx build/pump-n01.elf`);
   console noise: `[STEPPER]` step-rate block prints 1/s — set
   DBG_STEPPER_ENABLE 0 for quieter sessions (timer proven correct). Known
   cosmetic: first step-rate sample after a start straddles the accel ramp and

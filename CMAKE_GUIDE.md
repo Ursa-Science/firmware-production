@@ -28,12 +28,12 @@ cmake --preset default
         │
         ├─ loads CMakePresets.json  → generator = Ninja, toolchain file, build/ dir
         ├─ runs the toolchain file  → picks + verifies GCC 14.3.1, sets cross-compile mode
-        └─ runs CMakeLists.txt      → include(stm32g431.cmake); add_ursa_device(valve|pump|phtemp)
+        └─ runs CMakeLists.txt      → include(stm32g431.cmake); add_ursa_device(valve|pump|phtemp NODE_IDS ...)
                                          │
-                                         └─ each add_ursa_device() defines one .elf target
-                                            + its .bin/.hex/size post-build step
+                                         └─ each add_ursa_device() defines one .elf target PER NODE ID
+                                            (<device>-nNN) + its .bin/.hex/size post-build step
 
-cmake --build --preset valve  → compiles that target, emits build/valve.{elf,bin,hex,map}
+cmake --build --preset valve-n09  → compiles that target, emits build/valve-n09.{elf,bin,hex,map}
 ```
 
 The design goal behind all of it: **one build, one copy of the shared code, three
@@ -327,8 +327,35 @@ raw image. This post-build step runs automatically after every link:
 
 Today all three devices are structurally identical, so these are unused. They
 exist so a future device that needs one extra define or source can set, e.g.,
-`set(pump_EXTRA_DEFINES SOME_FLAG)` *before* `add_ursa_device(pump)` — without
+`set(pump_EXTRA_DEFINES SOME_FLAG)` *before* `add_ursa_device(pump ...)` — without
 forking the shared recipe.
+
+### 3.9 Node IDs — one target per node
+
+```cmake
+add_ursa_device(pump NODE_IDS 1 2)   # -> targets pump-n01, pump-n02 (+ pump-all)
+```
+
+`add_ursa_device()` is a thin loop: for each ID in `NODE_IDS` it calls the internal
+`_ursa_device_target()` (the recipe described in 3.1-3.8) with target name
+`<device>-nNN` and adds `NODEID=<id>` to the compile definitions.
+
+**Why this works with a single generated OD:** CANopen Architect bakes the node ID
+into exactly one macro, `NODEID_DCF` in `EDS/pimg.h`. `nodecfg.h` turns that into
+`NODEID` under `#if !defined(NODEID)`, so a `-DNODEID=2` on the command line wins.
+Everything else follows at runtime: `MCO_DefaultResetCommunication(NODEID, ...)`
+sets `MY_NODE_ID`, and PDO/SDO/EMCY/heartbeat COB-IDs are all computed from it
+(the OD stores PDO COB-IDs as 0 = "default for my node"). The one compile-time
+straggler, the `[1014h]` EMCY COB-ID readback, is re-pointed at `NODEID` in each
+device's hand-maintained `procimg.h`, right after it includes `pimg.h`.
+
+**Why not regenerate per node:** six generated files per node per OD change, and
+the copies drift (the first node-2 regeneration came out with a stale
+`RevisionNumber`). `pump-n01.bin` and `pump-n02.bin` differ by exactly two bytes:
+the node ID passed to the stack and the `[1014h]` readback.
+
+**Why no bare `pump` target:** so a node ID is always named at build and flash
+time, and a stale `build/pump.bin` can never be mistaken for current output.
 
 ---
 
@@ -339,9 +366,9 @@ cmake_minimum_required(VERSION 3.22)
 project(ursa-canopen-modules C ASM)          # C and assembly (the .s startup)
 set(URSA_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")  # repo root, used throughout stm32g431.cmake
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/stm32g431.cmake")
-add_ursa_device(valve)
-add_ursa_device(pump)
-add_ursa_device(phtemp)
+add_ursa_device(valve  NODE_IDS 9)
+add_ursa_device(pump   NODE_IDS 1 2)
+add_ursa_device(phtemp NODE_IDS 4)
 ```
 
 Deliberately tiny. `project(... C ASM)` enables both the C and assembly languages
@@ -359,21 +386,23 @@ folder — see §6).
     "toolchainFile": "${sourceDir}/cmake/arm-none-eabi-gcc.cmake",
     "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" } } ],
   "buildPresets": [ { "name": "default", ... },
-    { "name": "valve", "targets": ["valve"] }, { "name": "pump", ... }, { "name": "phtemp", ... } ] }
+    { "name": "valve-n09", "targets": ["valve-n09"] }, { "name": "pump-n01", ... },
+    { "name": "pump-n02", ... }, { "name": "phtemp-n04", ... } ] }
 ```
 
 **Why presets exist:** they capture the generator (Ninja), the build directory
 (`build/`), and — importantly — the toolchain file, so nobody has to remember to
 pass `-DCMAKE_TOOLCHAIN_FILE=...` by hand. `${sourceDir}` keeps it portable across
 machines. The per-device build presets are just conveniences that map
-`--preset valve` to building the `valve` target.
+`--preset valve-n09` to building the `valve-n09` target. A node ID without its
+own preset still builds with `cmake --build --preset default --target <device>-nNN`.
 
 Usage:
 
 ```bash
 cmake --preset default          # configure once
-cmake --build --preset default  # build all three
-cmake --build --preset valve    # build just one
+cmake --build --preset default   # build every device at every node ID
+cmake --build --preset pump-n02  # build just one
 ```
 
 ---
@@ -383,10 +412,13 @@ cmake --build --preset valve    # build just one
 1. Create `devices/<name>/` containing `Core/{Inc,Src}/`, `MCO_Target/`, and
    `MCO_CiA401__User/` (with its EDS). Easiest start: copy the closest existing
    device and adjust its `main.h`, `MCO_Target/mcohw_cfg.h`, and object dictionary.
-2. Add one line to `CMakeLists.txt`: `add_ursa_device(<name>)`.
+2. Add one line to `CMakeLists.txt`: `add_ursa_device(<name> NODE_IDS <id>...)`.
 3. Add a build preset to `CMakePresets.json` (copy an existing one, change the
    name and target).
-4. `cmake --preset default && cmake --build --preset <name>`.
+4. `cmake --preset default && cmake --build --preset <name>-nNN`.
+
+To build an **existing** device for an additional node ID, just append the ID to
+its `NODE_IDS` list (and optionally add a preset) — no CANopen Architect run.
 
 If the new device needs one extra define or source file, set
 `<name>_EXTRA_DEFINES` / `<name>_EXTRA_SOURCES` before its `add_ursa_device()` call

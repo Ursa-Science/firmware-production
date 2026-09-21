@@ -12,8 +12,9 @@
   ],
   "buildPresets": [
     { "name": "default", "configurePreset": "default" },
-    { "name": "valve",   "configurePreset": "default", "targets": ["valve"] },
-    { "name": "pump",    "configurePreset": "default", "targets": ["pump"] },
-    { "name": "phtemp",  "configurePreset": "default", "targets": ["phtemp"] }
+    { "name": "valve-n09",  "configurePreset": "default", "targets": ["valve-n09"] },
+    { "name": "pump-n01",   "configurePreset": "default", "targets": ["pump-n01"] },
+    { "name": "pump-n02",   "configurePreset": "default", "targets": ["pump-n02"] },
+    { "name": "phtemp-n04", "configurePreset": "default", "targets": ["phtemp-n04"] }
   ]
 }

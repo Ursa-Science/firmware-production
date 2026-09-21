@@ -148,7 +148,7 @@ int main(void)
 #if DEBUG_MASTER_ENABLE
 	printf("\r\n=== CANopen pH-Temperature Module (CiA 404) ===\r\n");
 	printf("Firmware: %s\r\n", FIRMWARE_VERSION);
-	printf("Node ID: 0x%02X\r\n", NODEID_DCF);
+	printf("Node ID: 0x%02X\r\n", NODEID);
 #endif
 
 	// Check if previous reset was caused by IWDG watchdog
