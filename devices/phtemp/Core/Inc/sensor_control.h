@@ -38,8 +38,8 @@ typedef enum {
 #define SW_PH_READY         (1u << 0)   /**< Electrode has valid mV reading    */
 #define SW_TEMP_READY       (1u << 1)   /**< Temperature sensor has valid rdg  */
 #define SW_FAULT            (1u << 3)   /**< General fault active              */
-#define SW_PH_FAULT         (1u << 4)   /**< Electrode/ADC fault               */
-#define SW_TEMP_FAULT       (1u << 5)   /**< Temperature sensor fault          */
+#define SW_PH_FAULT         (1u << 4)   /**< Electrode/ADC in ERROR or absent at init */
+#define SW_TEMP_FAULT       (1u << 5)   /**< Temperature sensor in ERROR or absent at init */
 #define SW_WARMING_UP       (1u << 6)   /**< Post-boot warmup in progress      */
 #define SW_REMOTE           (1u << 9)   /**< NMT Operational (remote ready)    */
 
@@ -74,15 +74,10 @@ bool SensorControl_IsOperational(void);
 
 /**
  * @brief Emergency stop from MCO error handling
- * @note  Puts sensors into safe state, clears outputs
+ * @note  Enters FAULT (EMCY 0xFF00, cause 3). Leaves via ControlWord bit 7.
+ *        A COMM_RESET re-runs SensorControl_Init(), which is the full reset.
  */
 void SensorControl_EmergencyStop(void);
-
-/**
- * @brief Reset sensor control on NMT state change
- * @note  Called when NMT transitions to PRE-OP or STOP
- */
-void SensorControl_Reset(void);
 
 /**
  * @brief Register sensor control as MCO event listener

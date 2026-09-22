@@ -8,14 +8,15 @@ CreatedBy=Dakota Ward
 CreationTime=11:12AM
 CreationDate=02-16-2026
 ModifiedBy=Dakota Ward
-ModificationTime=11:25AM
-ModificationDate=05-24-2026
+ModificationTime=02:30PM
+ModificationDate=09-22-2026
 
 [Comments]
-Lines=3
+Lines=4
 Line1=CiA 404 is the CanOpen device profile standard for measure devices and closed loop controllers,
 Line2=defining standardized interfaces for analog input/output devices including pH and temperature sensors,
 Line3=ensuring consistent measurement data formats and calibration procedures across manufacturers.
+Line4=HAND-EDITED 2026-09-22 after the Architect regen: RevisionNumber 0x00010002 -> 0x00020000 (dumb-module layout, major bump like the pump). Apply in the .cax before the next regen.
 
 [DeviceInfo]
 Vendorname=Ursa Science
@@ -23,7 +24,7 @@ ProductName=pH and Temperature Module
 OrderCode=URSA-PHT-001
 VendorNumber=0x00000123
 ProductNumber=0x00000004
-RevisionNumber=0x00010001
+RevisionNumber=0x00020000
 BaudRate_10=1
 BaudRate_20=1
 BaudRate_50=1
@@ -58,7 +59,7 @@ SupportedObjects=3
 3=0x1018
 
 [OptionalObjects]
-SupportedObjects=35
+SupportedObjects=34
 1=0x1002
 2=0x1003
 3=0x1006
@@ -85,33 +86,22 @@ SupportedObjects=35
 24=0x1A00
 25=0x1A01
 26=0x1F80
-27=0x6000
-28=0x6001
-29=0x6002
-30=0x6003
-31=0x6010
-32=0x6011
-33=0x6012
-34=0x6040
-35=0x6041
+27=0x6001
+28=0x6002
+29=0x6003
+30=0x6010
+31=0x6011
+32=0x6012
+33=0x6040
+34=0x6041
 
 [ManufacturerObjects]
-SupportedObjects=15
+SupportedObjects=5
 1=0x2000
-2=0x2200
-3=0x2201
-4=0x2202
-5=0x2203
-6=0x2204
-7=0x2205
-8=0x2210
-9=0x2220
-10=0x2221
-11=0x2222
-12=0x2300
-13=0x2400
-14=0x2401
-15=0x2402
+2=0x2300
+3=0x2400
+4=0x2401
+5=0x2402
 
 [1000]
 ParameterName=Device Type
@@ -501,7 +491,7 @@ DataType=0x0007
 LowLimit=
 HighLimit=
 AccessType=ro
-DefaultValue=0x00010001
+DefaultValue=0x00020000
 PDOMapping=0
 ObjFlags=0x00
 ParameterName=Revision Number
@@ -834,7 +824,7 @@ ObjectType=0x07
 
 [1A00]
 ParameterName=Transmit PDO 1 Mapping
-SubNumber=4
+SubNumber=3
 ObjectType=0x09
 
 [1A00sub0]
@@ -842,20 +832,20 @@ DataType=0x0005
 LowLimit=
 HighLimit=
 AccessType=const
-DefaultValue=0x03
+DefaultValue=0x02
 PDOMapping=0
 ObjFlags=0x00
-ParameterName=Number of Entries
+ParameterName=Highest Subindex
 
 [1A00sub1]
 DataType=0x0007
 LowLimit=
 HighLimit=
 AccessType=ro
-DefaultValue=0x60000010
+DefaultValue=0x60030010
 PDOMapping=0
 ObjFlags=0x00
-ParameterName=pHValue
+ParameterName=pHMillivolts
 ObjectType=0x07
 
 [1A00sub2]
@@ -867,17 +857,6 @@ DefaultValue=0x60100010
 PDOMapping=0
 ObjFlags=0x00
 ParameterName=Temperature
-ObjectType=0x07
-
-[1A00sub3]
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=0x60030010
-PDOMapping=0
-ObjFlags=0x00
-ParameterName=pHMillivolts
 ObjectType=0x07
 
 [1A01]
@@ -961,116 +940,6 @@ DefaultValue=0
 PDOMapping=0
 ObjFlags=0x00
 
-[2200]
-ParameterName=pHCalibrationCommand
-ObjectType=0x07
-DataType=0x0005
-LowLimit=
-HighLimit=
-AccessType=wo
-DefaultValue=0
-PDOMapping=0
-ObjFlags=0x00
-
-[2201]
-ParameterName=pHCalibrationStatus
-ObjectType=0x07
-DataType=0x0005
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=0
-PDOMapping=0
-ObjFlags=0x00
-
-[2202]
-ParameterName=CalibrationBuffer4
-ObjectType=0x07
-DataType=0x0003
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=1774
-PDOMapping=0
-ObjFlags=0x00
-
-[2203]
-ParameterName=CalibrationBuffer7
-ObjectType=0x07
-DataType=0x0003
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=0
-PDOMapping=0
-ObjFlags=0x00
-
-[2204]
-ParameterName=CalibrationBuffer10
-ObjectType=0x07
-DataType=0x0003
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=-1774
-PDOMapping=0
-ObjFlags=0x00
-
-[2205]
-ParameterName=pHCalibrationMode
-ObjectType=0x07
-DataType=0x0005
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=0
-PDOMapping=0
-ObjFlags=0x00
-
-[2210]
-ParameterName=TempOffset
-ObjectType=0x07
-DataType=0x0003
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=0
-PDOMapping=0
-ObjFlags=0x00
-
-[2220]
-ParameterName=pHElectrodeStatus
-ObjectType=0x07
-DataType=0x0005
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=0
-PDOMapping=0
-ObjFlags=0x00
-
-[2221]
-ParameterName=ElectrodeAge
-ObjectType=0x07
-DataType=0x0006
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=0
-PDOMapping=0
-ObjFlags=0x00
-
-[2222]
-ParameterName=LastCalibrationDate
-ObjectType=0x07
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=0
-PDOMapping=0
-ObjFlags=0x00
-
 [2300]
 ParameterName=SensorStatus
 ObjectType=0x07
@@ -1083,7 +952,7 @@ PDOMapping=1
 ObjFlags=0x00
 
 [2400]
-ParameterName=pHDeltaThreshold
+ParameterName=MillivoltDeltaThreshold
 ObjectType=0x07
 DataType=0x0006
 LowLimit=
@@ -1113,17 +982,6 @@ HighLimit=
 AccessType=rw
 DefaultValue=1
 PDOMapping=0
-ObjFlags=0x00
-
-[6000]
-ParameterName=pHValue
-ObjectType=0x07
-DataType=0x0006
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=700
-PDOMapping=1
 ObjFlags=0x00
 
 [6001]

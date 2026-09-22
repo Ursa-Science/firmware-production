@@ -5,16 +5,19 @@
  * @note    Full CiA 404 implementation:
  *          - NMT-gated state machine: DISABLED → WARMING_UP → RUNNING → FAULT
  *          - StatusWord (0x6041) generation from sensor states + NMT
- *          - ControlWord (0x6040) rising-edge processing (cal, fault reset)
+ *          - ControlWord (0x6040) rising-edge processing (fault reset)
  *          - Delta-threshold TPDO triggering for TPDO1 (measurements)
  *            and TPDO2 (status)
+ *          - ErrorRegister (0x1001) written to BOTH homes (process image for
+ *            TPDO2, gMCOConfig for SDO + EMCY) and EMCYs on sensor loss /
+ *            FAULT / reset (see the ERREG_* / EMCY_* defines below)
  *
  *          "Dumb module" (docs/PHTEMP_REFACTOR_PLAN.md): raw electrode mV +
  *          temperature + health only. No pH/Nernst/calibration on-module —
  *          the MIK owns all of that and its persistence.
  *
  *          SDO-readable objects:
- *            0x6003 pHMillivolts       (UINT16, mV — primary electrode output)
+ *            0x6003 pHMillivolts       (UINT16, mV × 10 — primary electrode output)
  *            0x6001 pHSignalQuality    (UINT8, 0-100%)
  *            0x6002 pHSensorStatus     (UINT8, pH_State_t)
  *            0x6010 Temperature        (INT16, °C × 10, raw)
@@ -23,7 +26,7 @@
  *            0x6040 ControlWord        (UINT16, writable — fault reset)
  *            0x6041 StatusWord         (UINT16, read-only)
  *            0x2300 SensorStatus       (UINT8, bitfield)
- *            0x2400 MillivoltDeltaThreshold (UINT16, mV)
+ *            0x2400 MillivoltDeltaThreshold (UINT16, mV × 10 — same unit as 0x6003)
  *            0x2401 TempDeltaThreshold (INT16, °C × 10)
  *            0x2402 StatusDeltaThreshold (UINT8, bit-change)
  *
@@ -62,13 +65,48 @@ extern I2C_HandleTypeDef hi2c1;
  *         During CONVERTING the sensor is perfectly healthy, just waiting.
  *         For status reporting we treat any non-error, non-idle state as "ready"
  *         so that StatusWord/SensorStatus don't flap every conversion cycle.
- *         Use Temp_GetState() == TEMP_STATE_READY only when you need a valid
- *         reading available RIGHT NOW (e.g., warmup gate, feeding pH compensation).
+ *         READY itself is visible for only ONE main-loop iteration per cycle
+ *         (Temp_Process() restarts a conversion on the next call), so never
+ *         gate on Temp_GetState() == TEMP_STATE_READY at a single instant —
+ *         the warm-up gate latches it instead (temp_seen_ready).
  */
 #define TEMP_IS_ACTIVE() \
 	(sensor_ctrl.temp_initialized && \
 	 Temp_GetState() != TEMP_STATE_ERROR && \
 	 Temp_GetState() != TEMP_STATE_IDLE)
+
+/** A measurement channel is faulted if its driver is in ERROR *or* it never
+ *  came up at init (probe absent at boot). Init failure used to be silent
+ *  because every fault check was gated on the initialized flag. */
+#define TEMP_IS_FAULTED() \
+	(!sensor_ctrl.temp_initialized || Temp_GetState() == TEMP_STATE_ERROR)
+#define PH_IS_FAULTED() \
+	(!sensor_ctrl.ph_initialized || pH_GetState() == PH_STATE_ERROR)
+
+/* ── ErrorRegister (0x1001) bits this application owns — CiA 301 layout ──
+ * bit 0 generic:           set whenever any other bit is set (spec requirement)
+ * bit 5 profile-specific:  a measurement channel (pH ADC / temp probe) is faulted
+ * Bits 1-4 (current/voltage/temperature/communication) are deliberately NOT
+ * used: bit 3 would mean the *device* overheats, bit 4 means CAN, not I2C/1-Wire.
+ * The stack owns bit 0 too (sets it on its own EMCYs); we only add/remove our
+ * contribution edge-wise so a stack-set bit 0 is not stomped every loop. */
+#define ERREG_GENERIC          0x01u
+#define ERREG_PROFILE          0x20u
+#define ERREG_APP_BITS         (ERREG_GENERIC | ERREG_PROFILE)
+
+/* ── EMCY codes (CiA 301 generic ranges; no pump/motor codes) ──
+ * 0x5000 device hardware:   a sensor went into ERROR / was absent at init.
+ *                           MSEF[0] = EMCY_SENSOR_*, MSEF[1] = driver state.
+ * 0xFF00 device specific:   application FAULT entered. MSEF[0] = FAULT_CAUSE_*,
+ *                           MSEF[1] = pH state, MSEF[2] = temp state.
+ * 0x0000 (EMCY_NO_ERROR):   ControlWord bit-7 fault reset. */
+#define EMCY_CODE_DEVICE_HW        0x5000u
+#define EMCY_CODE_DEVICE_SPECIFIC  0xFF00u
+#define EMCY_SENSOR_PH             1u
+#define EMCY_SENSOR_TEMP           2u
+#define FAULT_CAUSE_NO_SENSOR_READY 1u  /**< warm-up expired, no channel ever READY */
+#define FAULT_CAUSE_BOTH_SENSORS    2u  /**< both channels faulted while RUNNING */
+#define FAULT_CAUSE_EMERGENCY_STOP  3u  /**< stack fatal error / heartbeat lost */
 
 /** Minimum quality change (%) before updating process image.
  *  Suppresses MCO stack CoS triggering from ADC noise.
@@ -97,11 +135,18 @@ static struct {
 
 	/* CiA 404 state machine */
 	uint32_t warmup_start_ms; /**< Timestamp when WARMING_UP entered */
+	bool temp_seen_ready; /**< Latched during WARMING_UP: temp reached READY */
+	bool ph_seen_ready; /**< Latched during WARMING_UP: pH reached READY */
 	uint16_t last_control_word; /**< For rising-edge detection */
-	uint16_t last_status_word; /**< For delta trigger comparison */
+	uint16_t last_status_word; /**< Last StatusWord written (diagnostics) */
+
+	/* ErrorRegister / EMCY edge tracking */
+	uint8_t last_err_reg; /**< App-owned 0x1001 bits as last applied */
+	bool ph_err_reported; /**< 0x5000 EMCY sent for the current pH fault */
+	bool temp_err_reported; /**< 0x5000 EMCY sent for the current temp fault */
 
 	/* Delta-threshold TPDO tracking */
-	uint16_t last_tpdo_mv; /**< Last electrode mV sent via TPDO1 */
+	uint16_t last_tpdo_mv; /**< Last electrode mV×10 sent via TPDO1 */
 	int16_t last_tpdo_temp; /**< Last temp value sent via TPDO1 */
 	uint8_t last_tpdo_status; /**< Last SensorStatus sent via TPDO2 */
 
@@ -116,6 +161,10 @@ static void SensorControl_UpdateProcessImage(void);
 static uint16_t SensorControl_GenerateStatusWord(void);
 static void SensorControl_ProcessControlWord(uint16_t control_word);
 static void SensorControl_CheckDeltaTrigger(void);
+static void SensorControl_UpdateErrorRegister(void);
+static void SensorControl_ReportSensorErrors(void);
+static void SensorControl_EnterFault(uint8_t cause);
+static void SensorControl_ClearFault(void);
 
 /* Exported functions --------------------------------------------------------*/
 
@@ -131,7 +180,7 @@ bool SensorControl_Init(void) {
 	sensor_ctrl.last_tpdo_temp = 0;
 	sensor_ctrl.last_tpdo_status = 0;
 
-	/* Initialize DS18B20 temperature sensor on DQ pin (PB0) */
+	/* Initialize DS18B20 temperature sensor on the DQ pin (PA6, see main.h) */
 	if (Temp_Init(DQ_GPIO_Port, DQ_Pin) == HAL_OK) {
 		sensor_ctrl.temp_initialized = true;
 		DBG_PRINT(SENSOR, "Init: DS18B20 OK");
@@ -200,28 +249,35 @@ void SensorControl_Process(void) {
 	case SENSOR_STATE_DISABLED:
 		/* Transition to WARMING_UP when NMT is Operational */
 		sensor_ctrl.warmup_start_ms = HAL_GetTick();
+		sensor_ctrl.temp_seen_ready = false;
+		sensor_ctrl.ph_seen_ready = false;
 		sensor_ctrl.current_state = SENSOR_STATE_WARMING_UP;
 		DBG_STATE(SENSOR, "DISABLED -> WARMING_UP (2s warmup)");
 		break;
 
 	case SENSOR_STATE_WARMING_UP: {
+		/* Latch READY on every iteration. The DS18B20 driver shows READY for a
+		 * single loop per ~750 ms cycle, so sampling its state once at the
+		 * 2 s mark would miss it and fault a healthy temp-only module. */
+		if (sensor_ctrl.temp_initialized
+				&& Temp_GetState() == TEMP_STATE_READY) {
+			sensor_ctrl.temp_seen_ready = true;
+		}
+		if (sensor_ctrl.ph_initialized && pH_GetState() == PH_STATE_READY) {
+			sensor_ctrl.ph_seen_ready = true;
+		}
+
 		uint32_t elapsed = HAL_GetTick() - sensor_ctrl.warmup_start_ms;
 		if (elapsed >= WARMUP_TIME_MS) {
-			/* Check if at least one sensor is ready */
-			bool temp_ready = sensor_ctrl.temp_initialized
-					&& Temp_GetState() == TEMP_STATE_READY;
-			bool ph_ready = sensor_ctrl.ph_initialized
-					&& pH_GetState() == PH_STATE_READY;
-
-			if (temp_ready || ph_ready) {
+			if (sensor_ctrl.temp_seen_ready || sensor_ctrl.ph_seen_ready) {
 				sensor_ctrl.current_state = SENSOR_STATE_RUNNING;
 				DBG_STATE(SENSOR, "WARMING_UP -> RUNNING (temp=%s pH=%s)",
-						temp_ready ? "ready" : "wait",
-						ph_ready ? "ready" : "wait");
+						sensor_ctrl.temp_seen_ready ? "ready" : "absent",
+						sensor_ctrl.ph_seen_ready ? "ready" : "absent");
 			} else {
-				sensor_ctrl.current_state = SENSOR_STATE_FAULT;
 				DBG_ERROR(SENSOR,
 						"WARMING_UP -> FAULT (no sensors ready after warmup)");
+				SensorControl_EnterFault(FAULT_CAUSE_NO_SENSOR_READY);
 			}
 		}
 		break;
@@ -231,18 +287,12 @@ void SensorControl_Process(void) {
 		/* Delta-threshold TPDO triggering */
 		SensorControl_CheckDeltaTrigger();
 
-		/* Check for dual sensor failure → FAULT */
-		{
-			bool temp_error = sensor_ctrl.temp_initialized
-					&& Temp_GetState() == TEMP_STATE_ERROR;
-			bool ph_error = sensor_ctrl.ph_initialized
-					&& pH_GetState() == PH_STATE_ERROR;
-
-			if (temp_error && ph_error) {
-				sensor_ctrl.current_state = SENSOR_STATE_FAULT;
-				DBG_ERROR(SENSOR, "RUNNING -> FAULT (both sensors in error)");
-			}
-			/* Single sensor failure: log but don't fault */
+		/* Both channels faulted (in ERROR, or absent since init) → FAULT.
+		 * A single faulted channel is reported (SW bit, 0x1001 bit 5, EMCY
+		 * 0x5000) but does not fault the module. */
+		if (TEMP_IS_FAULTED() && PH_IS_FAULTED()) {
+			DBG_ERROR(SENSOR, "RUNNING -> FAULT (both sensors faulted)");
+			SensorControl_EnterFault(FAULT_CAUSE_BOTH_SENSORS);
 		}
 		break;
 
@@ -266,30 +316,8 @@ void SensorControl_EmergencyStop(void) {
 	if (!sensor_ctrl.initialized) {
 		return;
 	}
-	sensor_ctrl.current_state = SENSOR_STATE_FAULT;
 	DBG_ERROR(SENSOR, "EmergencyStop called");
-}
-
-void SensorControl_Reset(void) {
-	if (!sensor_ctrl.initialized) {
-		return;
-	}
-	sensor_ctrl.current_state = SENSOR_STATE_DISABLED;
-	sensor_ctrl.last_control_word = 0;
-	sensor_ctrl.last_tpdo_mv = 0;
-	sensor_ctrl.last_tpdo_temp = 0;
-	sensor_ctrl.last_tpdo_status = 0;
-	sensor_ctrl.last_status_word = 0;
-
-	/* Clear sensor errors so they can retry */
-	if (sensor_ctrl.temp_initialized) {
-		Temp_ClearError();
-	}
-	if (sensor_ctrl.ph_initialized) {
-		pH_ClearError();
-	}
-
-	DBG_STATE(SENSOR, "SensorControl_Reset: state -> DISABLED");
+	SensorControl_EnterFault(FAULT_CAUSE_EMERGENCY_STOP);
 }
 
 void SensorControl_RegisterMCOEvents(void) {
@@ -313,18 +341,19 @@ void SensorControl_RunDiagnostics(void) {
 	uint8_t tq = Temp_GetSignalQuality();
 	Temp_State_t ts = Temp_GetState();
 
-	/* Electrode (mV) diagnostics */
-	uint16_t mv = pH_GetMillivolts();
+	/* Electrode (mV × 10) diagnostics */
+	uint16_t mv10 = pH_GetMillivoltsX10();
 	uint8_t pq = pH_GetSignalQuality();
 	pH_State_t ps = pH_GetState();
 
-	/* StatusWord */
+	/* StatusWord + error register (both homes should agree) */
 	uint16_t sw = sensor_ctrl.last_status_word;
 
 	DBG_PRINT(SENSOR,
-			"DIAG: state=%d SW=0x%04X | temp=%d.%d C q=%u%% s=%d | mV=%u q=%u%% s=%d",
-			sensor_ctrl.current_state, sw, temp / 10,
-			(temp >= 0 ? temp : -temp) % 10, tq, ts, mv, pq, ps);
+			"DIAG: state=%d SW=0x%04X ER=0x%02X | temp=%d.%d C q=%u%% s=%d | mV=%u.%u q=%u%% s=%d",
+			sensor_ctrl.current_state, sw, gMCOConfig.error_register, temp / 10,
+			(temp >= 0 ? temp : -temp) % 10, tq, ts, mv10 / 10, mv10 % 10, pq,
+			ps);
 }
 
 SensorState_t SensorControl_GetState(void) {
@@ -355,13 +384,13 @@ static uint16_t SensorControl_GenerateStatusWord(void) {
 		sw |= SW_FAULT;
 	}
 
-	/* Bit 4: pH sensor fault */
-	if (sensor_ctrl.ph_initialized && pH_GetState() == PH_STATE_ERROR) {
+	/* Bit 4: pH sensor fault (in ERROR, or absent since init) */
+	if (PH_IS_FAULTED()) {
 		sw |= SW_PH_FAULT;
 	}
 
-	/* Bit 5: Temperature sensor fault */
-	if (sensor_ctrl.temp_initialized && Temp_GetState() == TEMP_STATE_ERROR) {
+	/* Bit 5: Temperature sensor fault (in ERROR, or absent since init) */
+	if (TEMP_IS_FAULTED()) {
 		sw |= SW_TEMP_FAULT;
 	}
 
@@ -399,34 +428,48 @@ static void SensorControl_ProcessControlWord(uint16_t control_word) {
 		DBG_STATE(SENSOR, "ControlWord: FAULT_RESET");
 		sensor_ctrl.current_state = SENSOR_STATE_DISABLED;
 
-		/* Clear sensor errors */
+		/* Clear sensor errors; a channel that was absent at init gets ONE
+		 * re-init attempt here so a probe plugged in later is picked up
+		 * without a power cycle. */
 		if (sensor_ctrl.temp_initialized) {
 			Temp_ClearError();
+		} else if (Temp_Init(DQ_GPIO_Port, DQ_Pin) == HAL_OK) {
+			sensor_ctrl.temp_initialized = true;
+			DBG_PRINT(SENSOR, "FAULT_RESET: DS18B20 now present");
 		}
 		if (sensor_ctrl.ph_initialized) {
 			pH_ClearError();
+		} else if (pH_Init(&hi2c1) == HAL_OK) {
+			sensor_ctrl.ph_initialized = true;
+			DBG_PRINT(SENSOR, "FAULT_RESET: MCP3221 now present");
 		}
+
+		/* Clear our 0x1001 bits in both homes + EMCY 0x0000 (error reset).
+		 * If a channel is still faulted, the next UpdateProcessImage() re-sets
+		 * the bit and re-announces it with a fresh 0x5000 EMCY. */
+		SensorControl_ClearFault();
 	}
 }
 
 /**
  * @brief  Check delta thresholds and trigger TPDOs if exceeded
  * @note   Compares current mV/temp/status against last TPDO'd values.
- *         TPDO1 (0x184): pHMillivolts + Temperature (measurement data)
- *         TPDO2 (0x284): SensorStatus + Quality + Error + StatusWord
+ *         TPDO1 (0x184): pHMillivolts(×10) + Temperature (measurement data)
+ *         TPDO2 (0x284): SensorStatus + pH/Temp quality + ErrorRegister
+ *         (StatusWord 0x6041 is SDO-only; it is not mapped in any TPDO.)
  */
 static void SensorControl_CheckDeltaTrigger(void) {
 	bool trigger_tpdo1 = false;
 	bool trigger_tpdo2 = false;
 
-	/* ── TPDO1: electrode mV + Temperature delta check ────────────── */
-	uint16_t cur_mv = pH_GetMillivolts();
+	/* ── TPDO1: electrode mV×10 + Temperature delta check ─────────── */
+	uint16_t cur_mv = pH_GetMillivoltsX10();
 	int16_t cur_temp = Temp_GetValue();
 
-	uint16_t mv_threshold = ProcImg_GetMillivoltDeltaThreshold();
+	uint16_t mv_threshold = ProcImg_GetMillivoltDeltaThreshold(); /* mV×10 */
 	int16_t temp_threshold = ProcImg_GetTempDeltaThreshold();
 
-	/* mV delta (unsigned comparison) */
+	/* mV×10 delta (unsigned comparison) */
 	if (mv_threshold > 0) {
 		uint16_t mv_diff;
 		if (cur_mv >= sensor_ctrl.last_tpdo_mv) {
@@ -453,13 +496,12 @@ static void SensorControl_CheckDeltaTrigger(void) {
 		MCO_TriggerTPDO(1); /* TPDO1 (1-indexed per MCO API) */
 		sensor_ctrl.last_tpdo_mv = cur_mv;
 		sensor_ctrl.last_tpdo_temp = cur_temp;
-		DBG_PRINT_V(SENSOR, "TPDO1 delta trigger: mV=%u temp=%d", cur_mv,
+		DBG_PRINT_V(SENSOR, "TPDO1 delta trigger: mVx10=%u temp=%d", cur_mv,
 				cur_temp);
 	}
 
-	/* ── TPDO2: SensorStatus + StatusWord delta check ─────────────── */
+	/* ── TPDO2: SensorStatus delta check ──────────────────────────── */
 	uint8_t status_threshold = ProcImg_GetStatusDeltaThreshold();
-	uint16_t cur_sw = sensor_ctrl.last_status_word;
 
 	/* Build SensorStatus bitfield for comparison (must match UpdateProcessImage) */
 	uint8_t cur_status = 0;
@@ -486,10 +528,9 @@ static void SensorControl_CheckDeltaTrigger(void) {
 		}
 	}
 
-	/* Also trigger TPDO2 if StatusWord changed (any bit flip).
-	 * Note: last_status_word reflects the value from the previous cycle's
-	 * UpdateProcessImage(), so cur_sw here is still the old value.
-	 * We compare current computed status against what was last TPDO'd. */
+	/* Also trigger TPDO2 on ANY SensorStatus bit change. This makes the
+	 * arithmetic threshold above redundant (a bitfield diff is not a
+	 * magnitude) — 0x2402 is an EDS deletion candidate, see the plan doc. */
 	if (cur_status != sensor_ctrl.last_tpdo_status) {
 		trigger_tpdo2 = true;
 	}
@@ -497,8 +538,7 @@ static void SensorControl_CheckDeltaTrigger(void) {
 	if (trigger_tpdo2) {
 		MCO_TriggerTPDO(2); /* TPDO2 (1-indexed per MCO API) */
 		sensor_ctrl.last_tpdo_status = cur_status;
-		DBG_PRINT_V(SENSOR, "TPDO2 delta trigger: status=0x%02X SW=0x%04X",
-				cur_status, cur_sw);
+		DBG_PRINT_V(SENSOR, "TPDO2 delta trigger: status=0x%02X", cur_status);
 	}
 }
 
@@ -525,8 +565,8 @@ static void SensorControl_UpdateProcessImage(void) {
 		}
 	}
 
-	/* ── Electrode (mV) objects ───────────────────────────────── */
-	ProcImg_SetpHMillivolts(pH_GetMillivolts());
+	/* ── Electrode (mV × 10) objects ──────────────────────────── */
+	ProcImg_SetpHMillivolts(pH_GetMillivoltsX10());
 	ProcImg_SetpHSensorStatus((uint8_t) pH_GetState());
 
 	/* pH quality: only update process image if change > hysteresis */
@@ -560,17 +600,109 @@ static void SensorControl_UpdateProcessImage(void) {
 	}
 	ProcImg_SetSensorStatus(sensor_status);
 
-	/* ── ErrorRegister (0x1001) ──────────────────────────────── */
-	uint8_t err_reg = 0;
+	/* ── ErrorRegister (0x1001), both homes, then sensor-loss EMCYs ── */
+	SensorControl_UpdateErrorRegister();
+	SensorControl_ReportSensorErrors();
+}
+
+/**
+ * @brief  Compute the app-owned 0x1001 bits and apply them to BOTH homes.
+ * @note   The stack serves SDO reads of 0x1001 and the EMCY error-register
+ *         byte from gMCOConfig.error_register (mco.c); TPDO2 carries the
+ *         process-image copy. Writing only the PI (the old code) made an SDO
+ *         read say 0x00 while TPDO2 showed the fault — the same dual-source
+ *         bug the pump's Phase 0a bench caught. Edge-wise set/clear so a
+ *         stack-set generic bit (its own EMCYs) is not stomped each loop; the
+ *         PI copy mirrors the merged register so both homes always agree.
+ */
+static void SensorControl_UpdateErrorRegister(void) {
+	uint8_t err = 0;
+	if (PH_IS_FAULTED() || TEMP_IS_FAULTED()) {
+		err |= ERREG_PROFILE;
+	}
+	if (sensor_ctrl.current_state == SENSOR_STATE_FAULT || err != 0) {
+		err |= ERREG_GENERIC; /* CiA 301: bit 0 set if any other bit is set */
+	}
+
+	uint8_t set_bits = err & (uint8_t) ~sensor_ctrl.last_err_reg;
+	uint8_t clr_bits = sensor_ctrl.last_err_reg & (uint8_t) ~err;
+	if (set_bits) {
+		gMCOConfig.error_register |= set_bits;
+	}
+	if (clr_bits) {
+		gMCOConfig.error_register &= (uint8_t) ~clr_bits;
+	}
+	sensor_ctrl.last_err_reg = err;
+
+	ProcImg_SetErrorRegister(gMCOConfig.error_register);
+}
+
+/**
+ * @brief  EMCY 0x5000 (device hardware) once per sensor fault episode.
+ * @note   Sensor errors only clear through the ControlWord fault-reset path,
+ *         which sends EMCY 0x0000 and re-arms these flags — so a still-faulted
+ *         channel is re-announced after a reset. Called after
+ *         SensorControl_UpdateErrorRegister() so the EMCY frame carries the
+ *         updated register byte.
+ */
+static void SensorControl_ReportSensorErrors(void) {
+	bool ph_faulted = PH_IS_FAULTED();
+	if (ph_faulted && !sensor_ctrl.ph_err_reported) {
+		sensor_ctrl.ph_err_reported = true;
+		DBG_ERROR(SENSOR, "EMCY 0x5000: pH ADC faulted (state=%d)",
+				pH_GetState());
+		(void) MCOP_PushEMCY(EMCY_CODE_DEVICE_HW, EMCY_SENSOR_PH,
+				(uint8_t) pH_GetState(), 0, 0, 0);
+	} else if (!ph_faulted) {
+		sensor_ctrl.ph_err_reported = false;
+	}
+
+	bool temp_faulted = TEMP_IS_FAULTED();
+	if (temp_faulted && !sensor_ctrl.temp_err_reported) {
+		sensor_ctrl.temp_err_reported = true;
+		DBG_ERROR(SENSOR, "EMCY 0x5000: temp probe faulted (state=%d)",
+				Temp_GetState());
+		(void) MCOP_PushEMCY(EMCY_CODE_DEVICE_HW, EMCY_SENSOR_TEMP,
+				(uint8_t) Temp_GetState(), 0, 0, 0);
+	} else if (!temp_faulted) {
+		sensor_ctrl.temp_err_reported = false;
+	}
+}
+
+/**
+ * @brief  Enter the application FAULT state with an EMCY 0xFF00 (cause-coded).
+ * @param  cause  FAULT_CAUSE_* (MSEF[0]); MSEF[1]/[2] = pH / temp driver state
+ * @note   Idempotent: re-entering while already in FAULT sends nothing.
+ *         Error register is updated first so the EMCY carries bit 0 set.
+ */
+static void SensorControl_EnterFault(uint8_t cause) {
 	if (sensor_ctrl.current_state == SENSOR_STATE_FAULT) {
-		err_reg |= 0x01; /* generic error */
+		return;
 	}
-	if ((sensor_ctrl.ph_initialized && pH_GetState() == PH_STATE_ERROR)
-			|| (sensor_ctrl.temp_initialized
-					&& Temp_GetState() == TEMP_STATE_ERROR)) {
-		err_reg |= 0x20; /* device-specific error */
+	sensor_ctrl.current_state = SENSOR_STATE_FAULT;
+	SensorControl_UpdateErrorRegister();
+	DBG_ERROR(SENSOR, "EMCY 0xFF00: FAULT cause=%u", cause);
+	(void) MCOP_PushEMCY(EMCY_CODE_DEVICE_SPECIFIC, cause,
+			(uint8_t) pH_GetState(), (uint8_t) Temp_GetState(), 0, 0);
+}
+
+/**
+ * @brief  ControlWord fault reset: clear our 0x1001 bits in both homes, re-arm
+ *         the sensor EMCY edges, send EMCY 0x0000 if there was anything to clear.
+ */
+static void SensorControl_ClearFault(void) {
+	bool had_error = (sensor_ctrl.last_err_reg != 0);
+
+	gMCOConfig.error_register &= (uint8_t) ~ERREG_APP_BITS;
+	sensor_ctrl.last_err_reg = 0;
+	ProcImg_SetErrorRegister(gMCOConfig.error_register);
+	sensor_ctrl.ph_err_reported = false;
+	sensor_ctrl.temp_err_reported = false;
+
+	if (had_error) {
+		DBG_STATE(SENSOR, "EMCY 0x0000: error reset");
+		(void) MCOP_PushEMCY(EMCY_NO_ERROR, 0, 0, 0, 0, 0);
 	}
-	ProcImg_SetErrorRegister(err_reg);
 }
 
 /**

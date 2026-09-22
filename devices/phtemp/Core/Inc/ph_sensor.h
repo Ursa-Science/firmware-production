@@ -6,9 +6,10 @@
  *          voltage in millivolts plus a rolling-window signal-quality metric.
  *
  *          "Dumb module" contract (see docs/PHTEMP_REFACTOR_PLAN.md): there is
- *          NO pH/Nernst/calibration on-module. The reported millivolts are the
- *          ADC-referred voltage (0-2048 mV, Vref 2.048 V) AFTER the MikroE
- *          pH-2 Click analog front-end (gain G + Vref/2 bias, ~1.024 V at
+ *          NO pH/Nernst/calibration on-module. The reported value is the
+ *          ADC-referred voltage in **mV × 10** (0-20480, Vref 2.048 V, 0.1 mV
+ *          resolution — same ×10 convention as Temperature) AFTER the MikroE
+ *          pH-2 Click analog front-end (gain G + Vref/2 bias, ~10240 at
  *          pH 7). The MIK owns the Nernst equation, temperature compensation,
  *          multi-point calibration, and all persistence.
  *
@@ -46,7 +47,7 @@ extern "C" {
 /** ADC parameters */
 #define PH_ADC_RESOLUTION       4096u       /**< 12-bit ADC */
 #define PH_ADC_MASK             0x0FFFu     /**< 12-bit mask */
-#define PH_VREF                 2.048f      /**< MCP1501T-20E precision reference (V) */
+#define PH_VREF_MV              2048u       /**< MCP1501T-20E precision reference (mV); 1 count = 0.5 mV */
 
 /** Sampling parameters */
 #define PH_SAMPLE_INTERVAL_MS   100u        /**< 10 Hz sampling rate */
@@ -82,7 +83,7 @@ HAL_StatusTypeDef pH_Init(I2C_HandleTypeDef *hi2c);
 /**
  * @brief  Non-blocking process function — call from main loop
  * @note   Manages the full sampling cycle:
- *         IDLE -> read ADC every 100ms -> average 4 samples -> mV -> READY
+ *         IDLE -> read ADC every 100ms -> average 4 samples -> mV×10 -> READY
  *         Automatically restarts sampling after each averaged reading.
  */
 void pH_Process(void);
@@ -101,10 +102,11 @@ uint16_t pH_GetRawADC(void);
 
 /**
  * @brief  Get electrode voltage from last reading
- * @retval Voltage in mV (e.g. 1650 = 1.650V), ADC-referred (0-2048 mV)
- * @note   This is the primary output. The MIK converts mV -> pH.
+ * @retval Voltage in mV × 10 (e.g. 16500 = 1650.0 mV), ADC-referred (0-20480)
+ * @note   This is the primary output (OD 0x6003). The MIK converts mV -> pH.
+ *         0.1 mV resolution; the 4-sample average's fractional counts are kept.
  */
-uint16_t pH_GetMillivolts(void);
+uint16_t pH_GetMillivoltsX10(void);
 
 /**
  * @brief  Get signal quality indicator

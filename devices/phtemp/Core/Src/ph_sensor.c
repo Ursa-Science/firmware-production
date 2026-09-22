@@ -8,12 +8,15 @@
  *          Data format: [byte0: 0000_D11..D8] [byte1: D7..D0]
  *            -> raw = ((byte0 << 8) | byte1) & 0x0FFF
  *
- *          Reports the ADC-referred electrode voltage in millivolts. There is
- *          NO pH/Nernst/calibration on-module — the MIK owns all of that (see
+ *          Reports the ADC-referred electrode voltage in **millivolts × 10**
+ *          (0.1 mV resolution, 0..20480). There is NO pH/Nernst/calibration
+ *          on-module — the MIK owns all of that (see
  *          docs/PHTEMP_REFACTOR_PLAN.md). This driver only acquires and
  *          averages the ADC and scores signal stability.
  *
  *          Sampling: 10 Hz (100ms), 4-sample average, 8-sample quality window.
+ *          Integer math only: one ADC count = 0.5 mV (2.048 V / 4096), so
+ *          mV×10 = sum_of_4_samples × 5 / 4 (keeps the averaging bits).
  *
  * @date    2026
  ******************************************************************************
@@ -50,8 +53,8 @@ typedef struct {
 	uint8_t sample_idx; /**< Next slot in sample_buf */
 
 	/* Averaged result */
-	uint16_t raw_adc; /**< Last averaged raw ADC value */
-	float voltage; /**< Last averaged voltage (V) */
+	uint16_t raw_adc; /**< Last averaged raw ADC value (sum / PH_AVG_COUNT) */
+	uint16_t mv_x10; /**< Last averaged electrode voltage, mV × 10 */
 
 	/* Signal quality (rolling window of averaged readings) */
 	uint16_t quality_buf[PH_QUALITY_WINDOW]; /**< Averaged ADC values */
@@ -68,7 +71,7 @@ static pH_Context_t ph_ctx;
 
 /* Private function prototypes -----------------------------------------------*/
 static HAL_StatusTypeDef pH_ReadADC(uint16_t *raw);
-static float pH_ADCToVoltage(uint16_t raw);
+static uint16_t pH_SumToMillivoltsX10(uint32_t sum);
 static void pH_UpdateSignalQuality(uint16_t adc_avg);
 
 /* Exported functions --------------------------------------------------------*/
@@ -98,8 +101,8 @@ HAL_StatusTypeDef pH_Init(I2C_HandleTypeDef *hi2c) {
 		return HAL_ERROR;
 	}
 
-	DBG_PRINT(PH, "Init: MCP3221 OK, test ADC=%u (%.3fV)", test_raw,
-			pH_ADCToVoltage(test_raw));
+	DBG_PRINT(PH, "Init: MCP3221 OK, test ADC=%u (%u.%u mV)", test_raw,
+			(unsigned) (test_raw / 2), (unsigned) ((test_raw % 2) * 5));
 
 	return HAL_OK;
 }
@@ -152,15 +155,14 @@ void pH_Process(void) {
 
 	/* ── Check if we have enough samples for an average ───────── */
 	if (ph_ctx.sample_idx >= PH_AVG_COUNT) {
-		/* Compute average */
+		/* Sum the window; keep the sum so the mV×10 conversion retains the
+		 * fractional counts the 4-sample average produces. */
 		uint32_t sum = 0;
 		for (uint8_t i = 0; i < PH_AVG_COUNT; i++) {
 			sum += ph_ctx.sample_buf[i];
 		}
 		ph_ctx.raw_adc = (uint16_t) (sum / PH_AVG_COUNT);
-
-		/* Convert to voltage (millivolts served by pH_GetMillivolts) */
-		ph_ctx.voltage = pH_ADCToVoltage(ph_ctx.raw_adc);
+		ph_ctx.mv_x10 = pH_SumToMillivoltsX10(sum);
 
 		/* Update signal quality rolling window */
 		pH_UpdateSignalQuality(ph_ctx.raw_adc);
@@ -173,9 +175,8 @@ void pH_Process(void) {
 		/* Reset for next averaging cycle */
 		ph_ctx.sample_idx = 0;
 
-		DBG_PRINT_V(PH, "ADC=%u V=%.3f mV=%u q=%u%%", ph_ctx.raw_adc,
-				ph_ctx.voltage, (unsigned )(ph_ctx.voltage * 1000.0f + 0.5f),
-				ph_ctx.signal_quality);
+		DBG_PRINT_V(PH, "ADC=%u mVx10=%u q=%u%%", ph_ctx.raw_adc,
+				ph_ctx.mv_x10, ph_ctx.signal_quality);
 	}
 }
 
@@ -187,8 +188,8 @@ uint16_t pH_GetRawADC(void) {
 	return ph_ctx.raw_adc;
 }
 
-uint16_t pH_GetMillivolts(void) {
-	return (uint16_t) (ph_ctx.voltage * 1000.0f + 0.5f);
+uint16_t pH_GetMillivoltsX10(void) {
+	return ph_ctx.mv_x10;
 }
 
 uint8_t pH_GetSignalQuality(void) {
@@ -200,6 +201,11 @@ void pH_ClearError(void) {
 		ph_ctx.i2c_error_count = 0;
 		ph_ctx.state = PH_STATE_IDLE;
 		ph_ctx.sample_idx = 0;
+		/* Drop the pre-fault quality window so the first post-recovery
+		 * quality figure is not a mix of stale and fresh samples. */
+		ph_ctx.quality_idx = 0;
+		ph_ctx.quality_count = 0;
+		ph_ctx.signal_quality = 0;
 		DBG_PRINT(PH, "Error cleared, state -> IDLE");
 	}
 }
@@ -236,12 +242,17 @@ static HAL_StatusTypeDef pH_ReadADC(uint16_t *raw) {
 }
 
 /**
- * @brief  Convert 12-bit ADC value to voltage
- * @param  raw  ADC value (0-4095)
- * @retval Voltage in volts
+ * @brief  Convert a PH_AVG_COUNT-sample sum to mV × 10
+ * @param  sum  Sum of PH_AVG_COUNT raw 12-bit samples (0..16380)
+ * @retval Averaged electrode voltage in mV × 10 (0..20480), rounded
+ * @note   One count = PH_VREF_MV / PH_ADC_RESOLUTION = 0.5 mV.
+ *         avg_counts × 0.5 mV × 10 = sum × 5 / 4 for PH_AVG_COUNT == 4.
+ *         Written generically so PH_AVG_COUNT can change.
  */
-static float pH_ADCToVoltage(uint16_t raw) {
-	return ((float) raw / (float) PH_ADC_RESOLUTION) * PH_VREF;
+static uint16_t pH_SumToMillivoltsX10(uint32_t sum) {
+	uint32_t num = sum * PH_VREF_MV * 10u;
+	uint32_t den = (uint32_t) PH_ADC_RESOLUTION * PH_AVG_COUNT;
+	return (uint16_t) ((num + den / 2u) / den);
 }
 
 /**

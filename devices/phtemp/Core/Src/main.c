@@ -35,7 +35,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define FIRMWARE_VERSION "3.3.1"
+#define FIRMWARE_VERSION "4.0.0"  /* dumb-module OD (rev 0x00020000): raw mV + temp, no on-module cal */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/

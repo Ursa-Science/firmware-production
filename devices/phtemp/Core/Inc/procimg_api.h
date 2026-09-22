@@ -24,15 +24,6 @@
 /* The MCO stack owns gProcImg[]; we reference it here so callers don't need to. */
 extern uint8_t MEM_PROC gProcImg[];
 
-/* Transitional shim: OD object 0x2400 is renamed pHDeltaThreshold ->
- * MillivoltDeltaThreshold at the Step-2 EDS regen (docs/PHTEMP_EDS_REGEN_CHANGELIST.md).
- * This lets the millivolt-semantics symbol resolve BEFORE the regen (aliasing the
- * old generated name) and AFTER (using the regenerated one). Remove this block
- * once the regenerated pimg.h defines P240000_MillivoltDeltaThreshold directly. */
-#ifndef P240000_MillivoltDeltaThreshold
-#define P240000_MillivoltDeltaThreshold P240000_pHDeltaThreshold
-#endif
-
 /* ========================================================================== */
 /* GETTERS (RPDO / SDO → application)                                         */
 /* ========================================================================== */
@@ -49,7 +40,7 @@ static inline uint8_t ProcImg_GetLEDControl(void) {
 	return gProcImg[P200000_LEDControl];
 }
 
-/** @brief Read MillivoltDeltaThreshold [0x2400] — uint16_t (mV delta) */
+/** @brief Read MillivoltDeltaThreshold [0x2400] — uint16_t (mV × 10 delta, same unit as 0x6003; default 10 = 1.0 mV) */
 static inline uint16_t ProcImg_GetMillivoltDeltaThreshold(void) {
 	uint16_t val;
 	memcpy(&val, &gProcImg[P240000_MillivoltDeltaThreshold], 2);
@@ -82,7 +73,7 @@ static inline void ProcImg_SetTemperature(int16_t temp) {
 	memcpy(&gProcImg[P601000_Temperature], &temp, 2);
 }
 
-/** @brief Write pHMillivolts [0x6003] — uint16_t (mV, e.g. 1650 = 1.650V) */
+/** @brief Write pHMillivolts [0x6003] — uint16_t (mV × 10, e.g. 16500 = 1650.0 mV; ×10 like Temperature) */
 static inline void ProcImg_SetpHMillivolts(uint16_t mv) {
 	memcpy(&gProcImg[P600300_pHMillivolts], &mv, 2);
 }

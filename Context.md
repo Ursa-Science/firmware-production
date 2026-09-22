@@ -5,10 +5,27 @@ Not a tutorial and not the running log — that is `BUILD_NOTES.md`, which holds
 detailed findings, gotchas, and history. Read this first, then BUILD_NOTES.md for
 depth. Keep this file terse and current; prune stale lines rather than appending.
 
-Last updated: 2026-08-25. Pump dose-strip refactor COMPLETE + HW-validated
+Last updated: 2026-09-22. Pump dose-strip refactor COMPLETE + HW-validated
 (step-counter OD; ~400-line dose engine removed; Q3 heartbeat-lost runaway
 backstop done). Pump runs at node 1 (master/MIK on a HIGH node ID → old node-1
 HB collision moot).
+
+**PHTEMP DUMB-MODULE REFACTOR (2026-09-22, UNCOMMITTED on
+build/node-id-parameter):** OD regenerated (11 cal objects gone, TPDO1 6→4 B
+= mV|temp, 0x2400 = MillivoltDeltaThreshold) + firmware rewired + 7 review
+fixes (0x1001 to BOTH homes, EMCY 0x5000/0xFF00/0x0000, warm-up latch,
+absent-probe reporting + re-init on CW 0x80, EmSA 0x2222 demo SDO removed,
+dead code). **0x6003 + 0x2400 = mV × 10** (like Temperature; ≈10240 at pH 7).
+RevisionNumber HAND-EDITED to **0x00020000** (regen produced 0x00010002) in
+.eds/.dcf/pimg.h → **.cax is BEHIND, sync before the next phtemp regen.** FW
+banner 4.0.0. Build: `--preset phtemp-n04` → build/phtemp-n04-250k.bin, text
+41384 B. NOT bench-validated. **NEXT = coupled gateway cutover**: the master
+image checks 1018:03 at boot, so gateway EDS/DCF + overrides (drop `6000:0`,
+`6003:0`/`2400:0` scale 0.1) + docs/tests + image rebuild + flash are ONE
+window. Plan + checklists: docs/PHTEMP_REFACTOR_PLAN.md,
+docs/PHTEMP_EDS_REGEN_CHANGELIST.md. Follow-ups: pump/valve still carry the
+0x2222 demo SDO (per-device change → re-validate each); EDS deletion candidates
+(0x1010/1011/1020/1002/1012/1013/1006/1007/1019/1028/2402) for the next regen.
 
 **NODE ID = BUILD PARAMETER (2026-09-21, branch build/node-id-parameter):**
 `add_ursa_device(<dev> NODE_IDS ...)` → one target per node, `<dev>-nNN`
@@ -53,8 +70,9 @@ doses at correct 1/8 (pin-implied); SpreadCycle + current UNVERIFIED. Next step:
 remove module + re-measure PDN idle. Full writeup + test plan:
 docs/PUMP_TMC2209_RX_DEAD_DEBUG_TICKET.md.
 
-main HEAD = 79b4e7e, == origin/main. Latest flashable image = build/pump-n01-250k.bin
-(FW 2.0.0, built 2026-08-25).
+Branch build/node-id-parameter HEAD = 7f914db (main = 4f34e36 + docs). Pump
+image = build/pump-n01-250k.bin (FW 2.0.0). Phtemp image =
+build/phtemp-n04-250k.bin (FW 4.0.0, 2026-09-22, NOT yet flashed/validated).
 
 ---
 
@@ -81,7 +99,7 @@ HAL. CAN slaves on a 250 kbit/s bus.
 |---|---|---|---|
 | valve  | yes | 1.2.6 | **VALIDATED** 2026-07-29 — UART + full CAN (NMT start, RPDO open/close, TPDO interval). Flashed via st-flash 1.8.0 / ST-LINK V3. |
 | pump   | yes | 1.2.6 (was 1.2.5) | **VALIDATED** 2026-08-07 (Firmware 2.0.0, Nema-17): CAN (2026-08-05: NMT, PDO run@10ml/min, quick stop, step rate) + TMC2209 UART CONFIG VERIFIED BY CHIP + PA5/DIAG refactor + RTT logging, all on good board via RTT observation. |
-| phtemp | yes | 1.2.6 | **VALIDATED** — CAN on bus + responds to commands; temp probe (DQ→PA6) fix validated 2026-07-29 |
+| phtemp | yes | 1.2.6 | **VALIDATED** 2026-08-24 on the Step-1 cal-strip build (mV+temp live, old OD). **Dumb-module OD + FW 4.0.0 (2026-09-22) NOT yet flashed** — needs the coupled gateway cutover first. Temp probe DQ→PA6 (2026-07-29). |
 
 Migration is PROVEN on hardware for ALL THREE devices. CMake+14.3.1 build is
 functionally equivalent to the CubeIDE build on real devices.
@@ -139,7 +157,8 @@ firmware-production and retire the staging dir. Do NOT maintain edits in both.
   ff448d83425fe6e78b5c7baf3e8f2b0d; temp probe validated 2026-07-29.
 
 Build all: `cmake --preset default && cmake --build --preset default`
-One device: `cmake --build --preset valve`  → `build/<device>.{elf,bin,hex,map}`
+One device: `cmake --build --preset valve-n09` (pump-n01, pump-n02, phtemp-n04)
+→ `build/<dev>-nNN-250k.{elf,bin,hex,map}`. No bare `<dev>` targets exist.
 
 ## Layout (post-migration)
 
@@ -174,7 +193,13 @@ hal_conf / mcohw_cfg / nodecfg), NOT built as a shared lib. 9 mco files × 3 = 2
    not significant (confirmed by Dakota). Pre-existing. Do not investigate.
 4. **`.cax` (CANopen Architect project, on a Windows E:\ drive) is NOT vendored.**
    Repo holds generated MicroCANopen output, not the generator input. Consequence
-   accepted: generated EDS headers can only be regenerated on Windows.
+   accepted: generated EDS headers can only be regenerated on Windows. Project
+   is now `E:\ursaScience\Modules\Modules-base.cax` (was Modules-1000kbs.cax).
+   **Hand-edits to generated files are allowed only for value changes that
+   touch no index table** (e.g. the phtemp RevisionNumber 2026-09-22), must be
+   marked `HAND-EDITED <date>` in every touched file, and must be mirrored in
+   the .cax before the next regen of that device or they silently revert.
+   Object add/delete/rename → regen only.
 5. **MCO_Target/ and Core/Src skeleton left per-device** for now (small deltas;
    avoid changing two variables at once during the CMake migration). Revisit after
    HW validation.
@@ -313,14 +338,14 @@ TWO before done.
   cosmetic: first step-rate sample after a start straddles the accel ramp and
   prints a bogus "TIMER/ISR fault" analysis line; converges 1.00x next sample.
 - valve DONE (2026-07-29); flash cmd: `st-flash --connect-under-reset --reset
-  write build/valve.bin 0x08000000`. A CAN harness exercising all 3 is still
-  worth building (3-device retest rule).
+  write build/valve-n09-250k.bin 0x08000000`. A CAN harness exercising all 3 is
+  still worth building (3-device retest rule).
 - **Tagging DEFERRED by decision (2026-07-29): do not tag any device yet.** Revisit
   the tag/versioning scheme LATER, after more devices are validated. Do not raise
   tagging again until Dakota brings it up. (Context: tag = qualified release, needed
   eventually for field traceability + the manufacturing pipeline.)
 - Flashing is via st-flash (Dakota's habit), not STM32_Programmer_CLI. Cmd:
-  `st-flash --connect-under-reset --reset write build/<dev>.bin 0x08000000`
+  `st-flash --connect-under-reset --reset write build/<dev>-nNN-250k.bin 0x08000000`
   (use `--connect-under-reset` when the target firmware runs an IWDG — needs NRST
   wired on the fixture; without NRST, drop to `--reset` on a blank chip only).
 
@@ -357,8 +382,13 @@ discussion, not implemented:
 ### Identity object (0x1018) findings — relevant to functional test
 - Product Code (sub2) cleanly IDs device type over CAN: pump=3, phtemp=4, valve=5.
   Station can verify-by-bus it flashed the right image.
-- Revision Number (sub3) is STATIC 0x00010001 on all 3 → does NOT track firmware
-  version. Device can't report its fw version over CAN. Would need build-time stamp.
+- Revision Number (sub3) = **OD layout generation**, not firmware version:
+  upper word bumps on a breaking OD layout change, lower word on compatible
+  additions. pump 0x00020000 (steps-only OD), phtemp 0x00020000 (dumb-module
+  OD, 2026-09-22), valve still 0x00010001. **The gateway's master image checks
+  it at slave boot** → an OD revision bump and the gateway EDS update are one
+  coupled cutover. FW version is a separate string (banner only; 0x100A still
+  "1.0" on all 3 — wiring it to FIRMWARE_VERSION is an open item).
 - Serial Number (sub4) is a per-TYPE constant (valve 0x123444 etc.), NOT per-unit →
   can't uniquely ID a unit on the bus. Manufacturing needs per-unit provisioning at
   test time (firmware change, not build-system).
