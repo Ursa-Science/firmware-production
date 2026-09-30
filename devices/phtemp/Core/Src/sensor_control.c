@@ -1,13 +1,18 @@
 /**
  ******************************************************************************
  * @file    sensor_control.c
- * @brief   Sensor Control Bridge — CiA 404 State Machine + TPDO Triggering
+ * @brief   Sensor Control Bridge — CiA 404 State Machine + process image
  * @note    Full CiA 404 implementation:
  *          - NMT-gated state machine: DISABLED → WARMING_UP → RUNNING → FAULT
  *          - StatusWord (0x6041) generation from sensor states + NMT
  *          - ControlWord (0x6040) rising-edge processing (fault reset)
- *          - Delta-threshold TPDO triggering for TPDO1 (measurements)
- *            and TPDO2 (status)
+ *          - TPDO transmission is the STACK's change-of-state scan (any
+ *            mapped PI byte changes → send after the inhibit time; event
+ *            timer guarantees a frame). No app-level delta thresholds:
+ *            0x2400-0x2402 were removed 2026-09-30 — they never reduced
+ *            traffic (the stack sends on every PI change regardless) and
+ *            only produced stale duplicate frames. Cadence knobs are the
+ *            standard 0x1800/0x1801 inhibit + event timers.
  *          - ErrorRegister (0x1001) written to BOTH homes (process image for
  *            TPDO2, gMCOConfig for SDO + EMCY) and EMCYs on sensor loss /
  *            FAULT / reset (see the ERREG_* / EMCY_* defines below)
@@ -26,9 +31,6 @@
  *            0x6040 ControlWord        (UINT16, writable — fault reset)
  *            0x6041 StatusWord         (UINT16, read-only)
  *            0x2300 SensorStatus       (UINT8, bitfield)
- *            0x2400 MillivoltDeltaThreshold (UINT16, mV × 10 — same unit as 0x6003)
- *            0x2401 TempDeltaThreshold (INT16, °C × 10)
- *            0x2402 StatusDeltaThreshold (UINT8, bit-change)
  *
  * @date    2026
  ******************************************************************************
@@ -145,11 +147,6 @@ static struct {
 	bool ph_err_reported; /**< 0x5000 EMCY sent for the current pH fault */
 	bool temp_err_reported; /**< 0x5000 EMCY sent for the current temp fault */
 
-	/* Delta-threshold TPDO tracking */
-	uint16_t last_tpdo_mv; /**< Last electrode mV×10 sent via TPDO1 */
-	int16_t last_tpdo_temp; /**< Last temp value sent via TPDO1 */
-	uint8_t last_tpdo_status; /**< Last SensorStatus sent via TPDO2 */
-
 	/* Quality hysteresis — suppress MCO CoS from ADC noise */
 	uint8_t pimg_ph_quality; /**< Last pH quality written to pimg   */
 	uint8_t pimg_temp_quality; /**< Last temp quality written to pimg */
@@ -160,7 +157,6 @@ static void SensorControl_HandleMCOEvent(const MCO_Event_t *event);
 static void SensorControl_UpdateProcessImage(void);
 static uint16_t SensorControl_GenerateStatusWord(void);
 static void SensorControl_ProcessControlWord(uint16_t control_word);
-static void SensorControl_CheckDeltaTrigger(void);
 static void SensorControl_UpdateErrorRegister(void);
 static void SensorControl_ReportSensorErrors(void);
 static void SensorControl_EnterFault(uint8_t cause);
@@ -176,9 +172,6 @@ bool SensorControl_Init(void) {
 	sensor_ctrl.ph_initialized = false;
 	sensor_ctrl.last_control_word = 0;
 	sensor_ctrl.last_status_word = 0;
-	sensor_ctrl.last_tpdo_mv = 0;
-	sensor_ctrl.last_tpdo_temp = 0;
-	sensor_ctrl.last_tpdo_status = 0;
 
 	/* Initialize DS18B20 temperature sensor on the DQ pin (PA6, see main.h) */
 	if (Temp_Init(DQ_GPIO_Port, DQ_Pin) == HAL_OK) {
@@ -284,8 +277,8 @@ void SensorControl_Process(void) {
 	}
 
 	case SENSOR_STATE_RUNNING:
-		/* Delta-threshold TPDO triggering */
-		SensorControl_CheckDeltaTrigger();
+		/* Measurements reach the bus through the stack's change-of-state scan
+		 * on the process image (written below); nothing to trigger here. */
 
 		/* Both channels faulted (in ERROR, or absent since init) → FAULT.
 		 * A single faulted channel is reported (SW bit, 0x1001 bit 5, EMCY
@@ -448,97 +441,6 @@ static void SensorControl_ProcessControlWord(uint16_t control_word) {
 		 * If a channel is still faulted, the next UpdateProcessImage() re-sets
 		 * the bit and re-announces it with a fresh 0x5000 EMCY. */
 		SensorControl_ClearFault();
-	}
-}
-
-/**
- * @brief  Check delta thresholds and trigger TPDOs if exceeded
- * @note   Compares current mV/temp/status against last TPDO'd values.
- *         TPDO1 (0x184): pHMillivolts(×10) + Temperature (measurement data)
- *         TPDO2 (0x284): SensorStatus + pH/Temp quality + ErrorRegister
- *         (StatusWord 0x6041 is SDO-only; it is not mapped in any TPDO.)
- */
-static void SensorControl_CheckDeltaTrigger(void) {
-	bool trigger_tpdo1 = false;
-	bool trigger_tpdo2 = false;
-
-	/* ── TPDO1: electrode mV×10 + Temperature delta check ─────────── */
-	uint16_t cur_mv = pH_GetMillivoltsX10();
-	int16_t cur_temp = Temp_GetValue();
-
-	uint16_t mv_threshold = ProcImg_GetMillivoltDeltaThreshold(); /* mV×10 */
-	int16_t temp_threshold = ProcImg_GetTempDeltaThreshold();
-
-	/* mV×10 delta (unsigned comparison) */
-	if (mv_threshold > 0) {
-		uint16_t mv_diff;
-		if (cur_mv >= sensor_ctrl.last_tpdo_mv) {
-			mv_diff = cur_mv - sensor_ctrl.last_tpdo_mv;
-		} else {
-			mv_diff = sensor_ctrl.last_tpdo_mv - cur_mv;
-		}
-		if (mv_diff >= mv_threshold) {
-			trigger_tpdo1 = true;
-		}
-	}
-
-	/* Temperature delta (signed, compare absolute difference) */
-	if (temp_threshold > 0) {
-		int16_t temp_diff = cur_temp - sensor_ctrl.last_tpdo_temp;
-		if (temp_diff < 0)
-			temp_diff = -temp_diff;
-		if (temp_diff >= temp_threshold) {
-			trigger_tpdo1 = true;
-		}
-	}
-
-	if (trigger_tpdo1) {
-		MCO_TriggerTPDO(1); /* TPDO1 (1-indexed per MCO API) */
-		sensor_ctrl.last_tpdo_mv = cur_mv;
-		sensor_ctrl.last_tpdo_temp = cur_temp;
-		DBG_PRINT_V(SENSOR, "TPDO1 delta trigger: mVx10=%u temp=%d", cur_mv,
-				cur_temp);
-	}
-
-	/* ── TPDO2: SensorStatus delta check ──────────────────────────── */
-	uint8_t status_threshold = ProcImg_GetStatusDeltaThreshold();
-
-	/* Build SensorStatus bitfield for comparison (must match UpdateProcessImage) */
-	uint8_t cur_status = 0;
-	if (PH_IS_ACTIVE()) {
-		cur_status |= 0x01; /* bit 0: electrode OK */
-	}
-	if (TEMP_IS_ACTIVE()) {
-		cur_status |= 0x02; /* bit 1: temp OK */
-	}
-	if (sensor_ctrl.current_state == SENSOR_STATE_FAULT) {
-		cur_status |= 0x08; /* bit 3: fault */
-	}
-
-	/* Check status byte change */
-	if (status_threshold > 0) {
-		uint8_t status_diff;
-		if (cur_status >= sensor_ctrl.last_tpdo_status) {
-			status_diff = cur_status - sensor_ctrl.last_tpdo_status;
-		} else {
-			status_diff = sensor_ctrl.last_tpdo_status - cur_status;
-		}
-		if (status_diff >= status_threshold) {
-			trigger_tpdo2 = true;
-		}
-	}
-
-	/* Also trigger TPDO2 on ANY SensorStatus bit change. This makes the
-	 * arithmetic threshold above redundant (a bitfield diff is not a
-	 * magnitude) — 0x2402 is an EDS deletion candidate, see the plan doc. */
-	if (cur_status != sensor_ctrl.last_tpdo_status) {
-		trigger_tpdo2 = true;
-	}
-
-	if (trigger_tpdo2) {
-		MCO_TriggerTPDO(2); /* TPDO2 (1-indexed per MCO API) */
-		sensor_ctrl.last_tpdo_status = cur_status;
-		DBG_PRINT_V(SENSOR, "TPDO2 delta trigger: status=0x%02X", cur_status);
 	}
 }
 

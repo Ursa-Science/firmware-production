@@ -390,6 +390,59 @@ gateway `bridge/devices/` copies are the pre-regen files (05-24).
   `devices/phtemp` and `devices/valve` although Context.md says they were
   deleted. BUILD_NOTES.md's status table still marks pump/phtemp unvalidated.
 
+## Bench validation 2026-09-30 — node 31, fw 4.0.0 + RTT
+
+Trace `cantrace-testing-pHtemp-refactor.csv` (Samsung T5) + RTT log. Sequence:
+power-up → NMT start (both probes, emulator at pH 7) → temp unplug → temp
+re-plug → electrode unplug → electrode re-plug. No fault reset sent.
+
+**Passed:** boot-up + PRE-OP HB; identity (0x0404, vendor 0x123, product 4,
+**revision 0x00020000**); 0x6000 aborts; 0x1001 = 0 at rest; NMT start →
+OP, TPDO2 `03 64 64 00` and TPDO1 4 B immediately; mV ≈ 10110–10170 at pH 7
+(≈1013 mV, vs. the ≈1024 estimate — front-end tolerance); temp 20.6 °C
+steady; **temp unplug → EMCY `00 50 21 02 04 00 00 00` byte-exact**, TPDO2
+ErrReg 0x21, RTT `DIAG: SW=0x0221 ER=0x21`, module kept RUNNING with mV live
+and temp frozen; electrode unplug → no EMCY (by design), pH quality 65 % →
+10 % within 500 ms, back to 86 % on re-plug; RTT logging over ST-LINK works,
+boot banner retained in the 4 K buffer.
+
+**Corrections to the playbook (not bugs):** serial reads 0x12345678 — the
+`MCOUSER_GetSerial()` callback overrides the OD default (that is the per-unit
+serial hook); non-existent objects abort with 0x08000000, not 0x06020000
+(stack behaviour, same on valve/pump).
+
+**Bug found + fixed:** every TPDO1 went out **twice per sample** — previous
+value, then the new value 50 ms later (55 pairs in 36 s). Cause:
+`SensorControl_CheckDeltaTrigger()` ran before `UpdateProcessImage()`, and
+`MCO_TriggerTPDO()` snapshots the PI at call time; the stack's own
+change-of-state scan then re-sent the fresh PI after the inhibit time. Fix:
+refresh the PI before triggering (one line, `sensor_control.c` RUNNING
+case). Same mechanism produced a stale duplicate TPDO2 right before the
+EMCY. Cosmetic leftover: TPDO2 shows an intermediate `01 qq 64 00` frame
+(temp-OK bit clear, quality/ErrReg not yet) because the DS18B20 driver
+passes through IDLE on retry before ERROR.
+
+**DECIDED 2026-09-30 — delete 0x2400/0x2401/0x2402.** The stack does
+change-of-state on any TPDO with a non-zero inhibit time (`mco.c` ~L1659),
+and the ADC average changes every 400 ms, so TPDO1 is sent on every sample
+(~2.5 Hz) whatever 0x2400 says; the app threshold only pre-empted the stack
+by a few ms. The alternative (a dead-band at the PI write, making SDO reads
+stale) was rejected: the MIK owns filtering, and rate capping via the
+standard TPDO1 inhibit time 0x1800:03 (rw, 100 µs units; stack write path
+`MCO_ApplyPDOparam`) gives the bus-load control. **Firmware side DONE
+2026-09-30:** `SensorControl_CheckDeltaTrigger()`, the `last_tpdo_*`
+trackers and the three `ProcImg_Get*DeltaThreshold()` getters are deleted;
+no `MCO_TriggerTPDO` calls remain; the tree builds against the current OD
+(objects unused) and the regenerated one. **OD side = Architect regen #2 — DONE 2026-09-30 12:38**
+(`docs/PHTEMP_ARCHITECT_REGEN_2_THRESHOLDS.md`; the optional section-D dead
+comm objects were removed in the same pass; .cax RevisionNumber synced;
+revision stays 0x00020000 — layout 2 not yet deployed beyond the reference
+bench). Build 40932 B text. Not yet re-flashed / bench-checked. FE guide §4.5 and the bench playbook
+E/F now describe 0x1800:03/05 instead.
+
+**Not exercised yet:** fault reset (G), both-sensors FAULT (I), boot with a
+probe absent (H3/H4), NMT stop/pre-op (J), node 32, both units together (K).
+
 ## EDS objects that can still go (config is owned upstream)
 
 Asked 2026-09-22: with the gateway/MIK owning config, what else in the phtemp
@@ -407,14 +460,14 @@ Batch them into the next regen together with the .cax revision sync.**
 | 0x1012 / 0x1013 Time Stamp COB-ID / Hi-res Time Stamp | **DELETE** | No consumer of time on the module (the `USECB_TIMEOFDAY` callback is a stub). |
 | 0x1006 / 0x1007 / 0x1019 SYNC period / window / counter | **DELETE** | All phtemp PDOs are event-driven (TType 0xFF); the module neither produces SYNC nor has synchronous PDOs. The gateway's 10 Hz SYNC is for the pump. |
 | 0x1028 Emergency Consumer | **DELETE (verify)** | Slave consumes no EMCY; stack has a write handler but no consumer path is configured. Check `mco.c:2895` does not need the entry to exist. |
-| 0x2402 StatusDeltaThreshold | **DELETE** | Firmware does an arithmetic diff on a bitfield, then also triggers on any bit change — the object is effectively a boolean that is always true. Hardcode "any change". |
+| 0x2402 StatusDeltaThreshold | **DELETE — decided 2026-09-30, with 0x2400/0x2401** | Firmware did an arithmetic diff on a bitfield, then also triggered on any bit change. All three threshold objects are gone from the firmware; regen #2 removes them from the OD. |
 | 0x1009 / 0x100A HW / SW version strings | **KEEP but wire** | Both are "1.0" placeholders. Wire 0x100A to `FIRMWARE_VERSION` at boot so the fw version is readable over CAN (Context.md identity finding); 0x1009 to a real HW rev when there is one. |
 | 0x1003 Pre-defined Error Field | KEEP | Stack-owned EMCY history (`USE_EMCY 1`, 4 entries). |
 | 0x1015 EMCY Inhibit | KEEP | Stack uses it; 2 bytes. |
 | 0x1016 / 0x1017 Consumer / Producer Heartbeat | **KEEP — gateway writes them at boot** | `gen-network.py` defaults `heartbeat_consumer: true`, `heartbeat_producer: 1000`; dcfgen puts SDO writes to both in the concise DCF. Deleting either breaks boot. |
 | 0x1F80 NMT Startup | KEEP | const, some masters read it. |
 | 0x2000 LEDControl | KEEP (ask MIK) | MIK-driven LED mode; delete only if the MIK never writes it. |
-| 0x2400 / 0x2401 mV / Temp delta thresholds | KEEP | The MIK's only knobs on TPDO1 cadence / bus load. MIK writes on connect. |
+| 0x2400 / 0x2401 mV / Temp delta thresholds | ~~KEEP~~ **DELETE (2026-09-30)** | Proven inert by trace: the stack's COS sends every PI change regardless. Cadence knob is 0x1800:03 inhibit + 0x1800:05 event timer. |
 | 0x6002 / 0x6012 pH / Temp SensorStatus | KEEP (bench diagnostics) | SDO-only raw driver enums; overlap with StatusWord bits 0/1/4/5. Cheap; revisit. |
 | 0x6040 / 0x6041 CW / SW | KEEP | CiA 404 pattern, pump parity, fault-reset path. Note SW is *not* mapped in any TPDO (SDO-only); TPDO2 carries the 1-byte 0x2300 subset. |
 | 0x2300 SensorStatus | KEEP (layout-3 candidate) | Duplicates SW bits 0/1/3. Consolidating (map SW into TPDO2, drop 0x2300) is a breaking layout change — not now, this layout is about to be bench-validated. |

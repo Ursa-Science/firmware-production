@@ -23,7 +23,7 @@ calibration constant, and its persistence.
 | 0x6000 pHValue | U16 pH×100, TPDO1 word 0 | **deleted** |
 | 0x6003 pHMillivolts | U16 integer mV | **U16 mV × 10** (0..20480, ≈10240 at pH 7) |
 | 0x6010 Temperature | I16 °C×10 | unchanged |
-| 0x2400 | pHDeltaThreshold, pH×100 | **MillivoltDeltaThreshold, mV × 10**, default 10 = 1.0 mV |
+| 0x2400 / 0x2401 / 0x2402 | delta thresholds (pH×100, °C×10, status) | **deleted** (2026-09-30). They never limited traffic: the stack sends on any process-image change. Use 0x1800:03 / 0x1800:05 (see §4.5) |
 | 0x2200–0x2205, 0x2210, 0x2220–0x2222 | cal command/status/buffers/mode, temp offset, electrode status/age/date | **deleted** |
 | TPDO1 (0x184) | 6 B `[pHValue \| Temp \| mV]` | **4 B `[mV×10 \| Temp]`** |
 | TPDO2 (0x284) | `[SensorStatus \| pHQual \| TempQual \| ErrReg]` | unchanged, but ErrReg is now correct (§4) |
@@ -80,9 +80,6 @@ Replace the `PH-TempModule-n04-250kbs:` block with:
         scale: 0.1
       "6010:0":              # Temperature (°C x 10)
         unit: °C
-        scale: 0.1
-      "2400:0":              # MillivoltDeltaThreshold — TPDO1 delta, mV x 10
-        unit: mV
         scale: 0.1
       "6041:0":
         notes:
@@ -159,14 +156,24 @@ input to ≈Vref/2, which reads as pH 7. Derive "electrode present" from
 Unchanged from the previous brief: `T_shown = 0x6010/10 + temp_offset_c10/10`,
 stored per unit on the host. 0x2210 is gone; there is no CAN write path.
 
-### 4.5 Configuration pushed on connect
+### 4.5 TPDO cadence (nothing to push unless you want it slower)
 
-Write these after boot (the module holds nothing across a reset):
+There are no manufacturer threshold objects (0x2400–0x2402 were deleted
+2026-09-30 — writing them aborts). The module transmits TPDO1 whenever the
+mapped value changes, which for the electrode is every 400 ms sample, and
+TPDO2 whenever a status/quality byte changes. The knobs are the standard
+CANopen ones, all `rw`, applied by dcfgen at boot or by SDO in PRE-OP:
 
-| Object | Unit | Suggested |
-|---|---|---|
-| 0x2400 MillivoltDeltaThreshold | mV×10 | 10 (1.0 mV) — TPDO1 fires on a ≥1 mV move, max 2 Hz (500 ms inhibit), min 1 Hz (event timer) |
-| 0x2401 TempDeltaThreshold | °C×10 | 5 |
+| Object | Unit | Default | Effect |
+|---|---|---|---|
+| 0x1800:03 TPDO1 inhibit time | 100 µs | 500 (50 ms) | raise to cap the rate, e.g. 10000 = at most 1 Hz |
+| 0x1800:05 TPDO1 event timer | ms | 1000 | a frame at least this often even if nothing changed |
+| 0x1801:03 TPDO2 inhibit time | 100 µs | 5000 (500 ms) | |
+| 0x1801:05 TPDO2 event timer | ms | 5000 | |
+
+The module holds nothing across a reset; if you change these, re-apply after
+every boot (put them in `overrides.yml` `sdo:` for the node, as the valve does
+for 0x2300).
 
 ### 4.6 Error register and EMCY decoding
 

@@ -40,25 +40,6 @@ static inline uint8_t ProcImg_GetLEDControl(void) {
 	return gProcImg[P200000_LEDControl];
 }
 
-/** @brief Read MillivoltDeltaThreshold [0x2400] — uint16_t (mV × 10 delta, same unit as 0x6003; default 10 = 1.0 mV) */
-static inline uint16_t ProcImg_GetMillivoltDeltaThreshold(void) {
-	uint16_t val;
-	memcpy(&val, &gProcImg[P240000_MillivoltDeltaThreshold], 2);
-	return val;
-}
-
-/** @brief Read TempDeltaThreshold [0x2401] — int16_t (°C × 10 delta) */
-static inline int16_t ProcImg_GetTempDeltaThreshold(void) {
-	int16_t val;
-	memcpy(&val, &gProcImg[P240100_TempDeltaTheshold], 2);
-	return val;
-}
-
-/** @brief Read StatusDeltaThreshold [0x2402] — uint8_t (bit-change delta) */
-static inline uint8_t ProcImg_GetStatusDeltaThreshold(void) {
-	return gProcImg[P240200_StatusDeltaThreshold];
-}
-
 /* ========================================================================== */
 /* SETTERS (application → TPDO / SDO)                                         */
 /* ========================================================================== */

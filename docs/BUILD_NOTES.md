@@ -299,6 +299,18 @@ Two field units commissioned at nodes 31/32 (`NODE_IDS 4 31 32`); images
 differ from n04 by exactly 3 bytes (two NODEID literals + 1014h readback).
 Bench script: `docs/PHTEMP_BENCH_TEST_N31_N32.md`.
 
+### phtemp Architect regen #2 (2026-09-30) — thresholds + dead comm objects
+
+Removed 0x2400/0x2401/0x2402 (app-level TPDO delta thresholds — proven
+inert by trace: the stack's change-of-state scan sends every PI change) and
+the dead comm objects 0x1002, 0x1006, 0x1007, 0x1010, 0x1011, 0x1012, 0x1013,
+0x1019, 0x1020. Kept 0x1028, 0x1016, 0x1017 (dcfgen writes the last two at
+boot). RevisionNumber 0x00020000 is now genuine tool output. PIMGEND 0x68 →
+0x47. Text 41012 → 40932 B. Lesson from the first export: renaming the
+device in Architect renames the output files (`-n31-`) without changing the
+DCF NodeID — and the gateway trusts the DCF NodeID first. Keep the canonical
+`-n04-` name; gateway per-node pairs are copies with NodeID edited.
+
 ---
 
 ## What has NOT worked / gotchas
@@ -337,6 +349,22 @@ Bench script: `docs/PHTEMP_BENCH_TEST_N31_N32.md`.
   `gMCOConfig.error_register` (`mco.c`), TPDO mappings come from the process
   image. An app that writes only the PI gets "TPDO says fault, SDO says 0"
   (seen on valve, pump, phtemp). Write both; pump and phtemp now do.
+- **`MCO_TriggerTPDO()` snapshots the process image at call time**
+  (`PDO_TXCOPY`) and the stack independently does change-of-state
+  detection on every TPDO with a non-zero inhibit time (`mco.c` ~L1659),
+  re-sending after the inhibit when the PI differs from the last snapshot.
+  Triggering before you have written the PI therefore sends the OLD data and
+  then the new data one inhibit later (phtemp TPDO1 doubled, 2026-09-30).
+  Always write the PI first; and know that an app-level "delta threshold"
+  cannot reduce COS traffic — only a PI-write dead-band or the inhibit time
+  can.
+- **Two `0x1018:04` serials**: the OD default (`PIMGDEFAULTS`, 0x123457 on
+  phtemp) is overridden on the bus by `MCOUSER_GetSerial()` in
+  `user_STM32.c` (returns 0x12345678 on all three). That callback is where a
+  per-unit serial would come from.
+- **Unknown-object SDO reads abort with 0x08000000** (general error), not
+  CiA's 0x06020000 — MicroCANopen's search-fail path (`mco.c:1306`,
+  `xsdo.c:1292`). Shared stack → left alone; expect it in playbooks.
 - CubeIDE `.cproject/.project/.mxproject/.osx.project` are still **tracked**
   under `devices/phtemp` and `devices/valve` although the migration notes say
   CubeIDE artifacts were deleted. Harmless; untrack when convenient.

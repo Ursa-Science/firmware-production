@@ -8,16 +8,15 @@ CreatedBy=Dakota Ward
 CreationTime=11:12AM
 CreationDate=02-16-2026
 ModifiedBy=Dakota Ward
-ModificationTime=02:30PM
-ModificationDate=09-22-2026
+ModificationTime=12:37PM
+ModificationDate=09-30-2026
 LastEDS=
 
 [Comments]
-Lines=4
+Lines=3
 Line1=CiA 404 is the CanOpen device profile standard for measure devices and closed loop controllers,
 Line2=defining standardized interfaces for analog input/output devices including pH and temperature sensors,
 Line3=ensuring consistent measurement data formats and calibration procedures across manufacturers.
-Line4=HAND-EDITED 2026-09-22 after the Architect regen: RevisionNumber 0x00010002 -> 0x00020000 (dumb-module layout, major bump like the pump). Apply in the .cax before the next regen.
 
 [DeviceInfo]
 Vendorname=Ursa Science
@@ -69,49 +68,37 @@ SupportedObjects=3
 3=0x1018
 
 [OptionalObjects]
-SupportedObjects=34
-1=0x1002
-2=0x1003
-3=0x1006
-4=0x1007
-5=0x1008
-6=0x1009
-7=0x100A
-8=0x1010
-9=0x1011
-10=0x1012
-11=0x1013
-12=0x1014
-13=0x1015
-14=0x1016
-15=0x1017
-16=0x1019
-17=0x1020
-18=0x1028
-19=0x1200
-20=0x1400
-21=0x1600
-22=0x1800
-23=0x1801
-24=0x1A00
-25=0x1A01
-26=0x1F80
-27=0x6001
-28=0x6002
-29=0x6003
-30=0x6010
-31=0x6011
-32=0x6012
-33=0x6040
-34=0x6041
+SupportedObjects=25
+1=0x1003
+2=0x1008
+3=0x1009
+4=0x100A
+5=0x1014
+6=0x1015
+7=0x1016
+8=0x1017
+9=0x1028
+10=0x1200
+11=0x1400
+12=0x1600
+13=0x1800
+14=0x1801
+15=0x1A00
+16=0x1A01
+17=0x1F80
+18=0x6001
+19=0x6002
+20=0x6003
+21=0x6010
+22=0x6011
+23=0x6012
+24=0x6040
+25=0x6041
 
 [ManufacturerObjects]
-SupportedObjects=5
+SupportedObjects=2
 1=0x2000
 2=0x2300
-3=0x2400
-4=0x2401
-5=0x2402
 
 [1000]
 ParameterName=Device Type
@@ -133,19 +120,6 @@ DataType=0x0005
 LowLimit=
 HighLimit=
 AccessType=const
-DefaultValue=
-PDOMapping=1
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[1002]
-ParameterName=Manufacturer Status Register
-ObjectType=0x07
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=ro
 DefaultValue=
 PDOMapping=1
 ObjFlags=0x00
@@ -221,32 +195,6 @@ Denotation=
 ParameterName=Standard Error Field 4
 ObjectType=0x07
 
-[1006]
-ParameterName=Communication Cycle Period
-ObjectType=0x07
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=100000
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[1007]
-ParameterName=Synchronous Window Length
-ObjectType=0x07
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=0
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
 [1008]
 ParameterName=Manufacturer Device Name
 ObjectType=0x07
@@ -282,170 +230,6 @@ HighLimit=
 AccessType=ro
 DefaultValue=1.0
 PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[1010]
-ParameterName=Store Parameters
-SubNumber=5
-ObjectType=0x08
-
-[1010sub0]
-DataType=0x0005
-LowLimit=
-HighLimit=
-AccessType=const
-DefaultValue=0x04
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-ParameterName=Number of Entries
-
-[1010sub1]
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-ParameterName=Save All Parameters
-ObjectType=0x07
-
-[1010sub2]
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-ParameterName=Save Communication Parameters
-ObjectType=0x07
-
-[1010sub3]
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-ParameterName=Save Application Parameters
-ObjectType=0x07
-
-[1010sub4]
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=0
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-ParameterName=Save Manufacturer Defined Parameters 1
-ObjectType=0x07
-
-[1011]
-ParameterName=Restore Default Parameters
-SubNumber=5
-ObjectType=0x08
-
-[1011sub0]
-DataType=0x0005
-LowLimit=
-HighLimit=
-AccessType=const
-DefaultValue=0x04
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-ParameterName=Number of Entries
-
-[1011sub1]
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-ParameterName=Restore All Parameters
-ObjectType=0x07
-
-[1011sub2]
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-ParameterName=Restore Communication Parameters
-ObjectType=0x07
-
-[1011sub3]
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-ParameterName=Restore Application Parameters
-ObjectType=0x07
-
-[1011sub4]
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=0
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-ParameterName=Restore Manufacturer Defined Parameters 1
-ObjectType=0x07
-
-[1012]
-ParameterName=Time Stamp COB-ID
-ObjectType=0x07
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=0x00000100
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[1013]
-ParameterName=High Resolution Time Stamp
-ObjectType=0x07
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=ro
-DefaultValue=0
-PDOMapping=1
 ObjFlags=0x00
 ParameterValue=
 Denotation=
@@ -586,62 +370,6 @@ ObjFlags=0x00
 ParameterValue=
 Denotation=
 ParameterName=Serial Number
-ObjectType=0x07
-
-[1019]
-ParameterName=Synchronous Counter Overflow Value
-ObjectType=0x07
-DataType=0x0005
-LowLimit=0
-HighLimit=240
-AccessType=rw
-DefaultValue=0
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[1020]
-ParameterName=Verify Configuration
-SubNumber=3
-ObjectType=0x08
-
-[1020sub0]
-DataType=0x0005
-LowLimit=
-HighLimit=
-AccessType=const
-DefaultValue=0x02
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-ParameterName=Number of Entries
-
-[1020sub1]
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-ParameterName=Configuration Date
-ObjectType=0x07
-
-[1020sub2]
-DataType=0x0007
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-ParameterName=Configuration Time
 ObjectType=0x07
 
 [1028]
@@ -1101,45 +829,6 @@ HighLimit=
 AccessType=ro
 DefaultValue=0
 PDOMapping=1
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[2400]
-ParameterName=MillivoltDeltaThreshold
-ObjectType=0x07
-DataType=0x0006
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=10
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[2401]
-ParameterName=TempDeltaTheshold
-ObjectType=0x07
-DataType=0x0003
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=5
-PDOMapping=0
-ObjFlags=0x00
-ParameterValue=
-Denotation=
-
-[2402]
-ParameterName=StatusDeltaThreshold
-ObjectType=0x07
-DataType=0x0005
-LowLimit=
-HighLimit=
-AccessType=rw
-DefaultValue=1
-PDOMapping=0
 ObjFlags=0x00
 ParameterValue=
 Denotation=

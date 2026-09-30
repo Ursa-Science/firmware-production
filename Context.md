@@ -19,7 +19,32 @@ Error_Handler via RTT; +76 B text, bss 4884→8132 for the 4 K up-buffer).
 View: `probe-rs attach --chip STM32G431KBTx build/phtemp-n31-250k.elf`.
 Bench script for the two units: `docs/PHTEMP_BENCH_TEST_N31_N32.md` (CANopen
 Magic frames + expected replies, incl. fault/EMCY cases). Gateway still needs
-`-n31`/`-n32` EDS+DCF pairs. Uncommitted: node IDs, RTT switch, both docs.
+`-n31`/`-n32` EDS+DCF pairs. **Node 31 BENCH-VALIDATED 2026-09-30** (trace
+cantrace-testing-pHtemp-refactor.csv): identity/rev 0x00020000, TPDOs,
+temp-unplug EMCY byte-exact, RTT works. Found + FIXED: TPDO1 sent twice per
+sample (stale then new, 50 ms apart) — `CheckDeltaTrigger` ran before
+`UpdateProcessImage` and `MCO_TriggerTPDO` snapshots the PI. Learned: **the
+MCO stack does change-of-state TX on any TPDO with inhibit ≠ 0**, so 0x2400
+never reduced traffic → **DECIDED: delete 0x2400-0x2402.** Firmware side
+DONE (CheckDeltaTrigger + getters gone, no MCO_TriggerTPDO; builds against
+current AND regenerated OD). OD side = **Architect regen #2 DONE 2026-09-30 12:26** (edit list
+`docs/PHTEMP_ARCHITECT_REGEN_2_THRESHOLDS.md`): 0x2400-0x2402 gone AND the
+optional dead comm objects 0x1002/1006/1007/1010/1011/1012/1013/1019/1020
+gone (0x1028 kept, 0x1016/0x1017 kept); RevisionNumber 0x00020000 now genuine
+tool output (.cax synced, hand-edit markers gone); PIMGEND 0x68→0x47; TPDO
+init args unchanged; NODEID_DCF still 0x04. Builds clean, text 40932 B.
+Files carry the canonical `PH-TempModule-n04-250kbs` name (a first export
+came out named n31 with NodeID still 4 — re-exported 12:38; the gateway
+resolves node ID from the DCF NodeID first, so never ship an "nNN" pair whose
+DCF says another node). Images for n04/n31/n32 built + validated 12:40.
+Remaining for phtemp: commit → gateway EDS re-copy + drop `2400:0` override
+→ re-flash both units → bench: SDO 0x2400 aborts, TPDO1 cadence unchanged. Cadence knob is now the
+standard 0x1800:03 inhibit (stack `MCO_ApplyPDOparam` accepts SDO writes).
+FE guide §4.5 + playbook E/F updated accordingly.
+Playbook corrected: serial = 0x12345678 (MCOUSER_GetSerial callback, the
+per-unit hook), unknown-object abort = 0x08000000 (stack). Not yet tested:
+fault reset, FAULT, boot-with-probe-absent, node 32, both units. Uncommitted:
+node IDs, RTT switch, trigger-order fix, docs.
 
 **PHTEMP DUMB-MODULE REFACTOR (2026-09-22, committed 3f3c7e1 on
 build/node-id-parameter):** OD regenerated (11 cal objects gone, TPDO1 6→4 B

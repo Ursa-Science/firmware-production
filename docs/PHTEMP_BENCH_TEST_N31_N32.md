@@ -1,11 +1,13 @@
-# pH/Temp fw 4.0.0 — CANopen Magic bench script, nodes 31 + 32
+# pH/Temp fw 4.0.0 — CANopen Magic bench playbook, nodes 31 + 32
 
-Frames are `COB-ID#bytes` (hex), the format used in the pump playbook; paste
-the ID and data into CANopen Magic's transmit list. Bus 250 kbit/s. Record
-the whole session; name traces `cantrace-phtemp-n31-<test>.csv` / `-n32-`.
+Every frame is given the way CANopen Magic's transmit list and trace show
+it: **COB-ID, DLC, raw data bytes (hex, exactly as on the wire = little
+endian for multi-byte values)**. "Send" rows go into the transmit list;
+"Expect" rows are what the trace must show. Bus 250 kbit/s. Record the whole
+session; name traces `cantrace-phtemp-n31-<test>.csv` / `-n32-`.
 
-Logging is now **SEGGER RTT over SWD** (no serial adapter). To watch a unit
-while it runs (does not halt the core; IWDG keeps running):
+Logging is **SEGGER RTT over SWD** — no serial adapter. To watch a unit while
+it runs (non-halting; the IWDG keeps running):
 
 ```
 probe-rs attach --chip STM32G431KBTx build/phtemp-n31-250k.elf
@@ -13,186 +15,247 @@ probe-rs attach --chip STM32G431KBTx build/phtemp-n31-250k.elf
 
 ## COB-IDs
 
-| | node 31 (0x1F) | node 32 (0x20) |
-|---|---|---|
-| SDO request (you → node) | `61F` | `620` |
-| SDO response | `59F` | `5A0` |
-| RPDO1 ControlWord (you → node) | `21F` | `220` |
-| TPDO1 `[mV×10 lo hi \| temp×10 lo hi]` | `19F` | `1A0` |
-| TPDO2 `[SensorStatus \| pHQual \| TempQual \| ErrReg]` | `29F` | `2A0` |
-| EMCY | `09F` | `0A0` |
-| Heartbeat | `71F` | `720` |
+| Message | node 31 (0x1F) | node 32 (0x20) | DLC |
+|---|---|---|---|
+| SDO request (you → node) | 0x61F | 0x620 | 8 |
+| SDO response (node → you) | 0x59F | 0x5A0 | 8 |
+| RPDO1 ControlWord (you → node) | 0x21F | 0x220 | 2 |
+| TPDO1 `mV×10 lo, hi, temp×10 lo, hi` | 0x19F | 0x1A0 | 4 |
+| TPDO2 `SensorStatus, pHQual, TempQual, ErrReg` | 0x29F | 0x2A0 | 4 |
+| EMCY | 0x09F | 0x0A0 | 8 |
+| Heartbeat | 0x71F | 0x720 | 1 |
+| NMT (you → all) | 0x000 | 0x000 | 2 |
 
-Everything below is written for node 31. For node 32 substitute the IDs
-above and the node byte `20` in NMT commands. SDO data is little-endian.
+The playbook is written for **node 31**. For node 32 use the IDs above and
+node byte `20` instead of `1F` in NMT frames. SDO reply byte 0: `4F` = 1 data
+byte, `4B` = 2, `47` = 3, `43` = 4, `60` = write accepted, `80` = abort
+(bytes 4-7 = abort code LE). **MicroCANopen answers a read of a non-existent
+object with 0x08000000 "general error" (`00 00 00 08`), not the CiA
+0x06020000** — stack behaviour, same on valve and pump; any abort is a pass.
 
-SDO reply prefixes: `4F` = 1 byte, `4B` = 2 bytes, `43` = 4 bytes, `47` =
-3 bytes, `60` = write OK, `80 … 00 00 02 06` = abort "object does not exist".
+**Validated 2026-09-30, node 31** (`cantrace-testing-pHtemp-refactor.csv` +
+RTT): sections A, B, C, D, E, H1, H2-by-quality pass. Two corrections from
+that trace are folded in below (serial value, abort code). One firmware bug
+found and fixed the same day: TPDO1 was sent twice per sample, stale value
+then new value 50 ms apart — see the note under E.
 
 ---
 
-## A. Power-on (PRE-OPERATIONAL)
+## A. Power-on → PRE-OPERATIONAL
 
-Expect, unprompted:
+Nothing to send. Expect:
 
-| Frame | Meaning |
-|---|---|
-| `71F#00` | boot-up |
-| `71F#7F` every 1000 ms | heartbeat, PRE-OP |
-| no `19F` / `29F` | TPDOs are OP-only |
-| RTT: `Firmware: 4.0.0`, `Node ID: 0x1F` | banner |
+| COB-ID | DLC | Data | Meaning |
+|---|---|---|---|
+| 0x71F | 1 | `00` | boot-up |
+| 0x71F | 1 | `7F` every 1000 ms | heartbeat, PRE-OP |
+| 0x19F / 0x29F | — | none | TPDOs are OP-only |
 
-If a probe is missing at boot you also get an EMCY here (see H).
+RTT: `Firmware: 4.0.0`, `Node ID: 0x1F`. If a probe is missing at boot an
+EMCY appears here too (see H).
 
 ## B. Identity (works in PRE-OP)
 
-| Send | Expect |
-|---|---|
-| `61F#40 00 10 00 00 00 00 00` | `59F#43 00 10 00 04 04 00 00` — device type 0x0404 |
-| `61F#40 18 10 01 00 00 00 00` | `59F#43 18 10 01 23 01 00 00` — vendor 0x123 |
-| `61F#40 18 10 02 00 00 00 00` | `59F#43 18 10 02 04 00 00 00` — product 4 (phtemp) |
-| `61F#40 18 10 03 00 00 00 00` | `59F#43 18 10 03 00 00 02 00` — **revision 0x00020000** |
-| `61F#40 18 10 04 00 00 00 00` | `59F#43 18 10 04 57 34 12 00` — serial (per-type constant) |
-| `61F#40 0A 10 00 00 00 00 00` | `59F#47 0A 10 00 31 2E 30 00` — sw version string "1.0" (placeholder, known) |
-| `61F#40 17 10 00 00 00 00 00` | `59F#4B 17 10 00 E8 03 00 00` — producer HB 1000 ms |
+| Send COB-ID | DLC | Data | Expect COB-ID | DLC | Data | Meaning |
+|---|---|---|---|---|---|---|
+| 0x61F | 8 | `40 00 10 00 00 00 00 00` | 0x59F | 8 | `43 00 10 00 04 04 00 00` | device type 0x00000404 |
+| 0x61F | 8 | `40 18 10 01 00 00 00 00` | 0x59F | 8 | `43 18 10 01 23 01 00 00` | vendor 0x123 |
+| 0x61F | 8 | `40 18 10 02 00 00 00 00` | 0x59F | 8 | `43 18 10 02 04 00 00 00` | product 4 = phtemp |
+| 0x61F | 8 | `40 18 10 03 00 00 00 00` | 0x59F | 8 | `43 18 10 03 00 00 02 00` | **revision 0x00020000** |
+| 0x61F | 8 | `40 18 10 04 00 00 00 00` | 0x59F | 8 | `43 18 10 04 78 56 34 12` | serial 0x12345678 — served by the `MCOUSER_GetSerial()` callback in `user_STM32.c`, NOT the OD default 0x123457 (that is the hook for per-unit serials) |
+| 0x61F | 8 | `40 0A 10 00 00 00 00 00` | 0x59F | 8 | `47 0A 10 00 31 2E 30 00` | sw version "1.0" (known placeholder) |
+| 0x61F | 8 | `40 17 10 00 00 00 00 00` | 0x59F | 8 | `4B 17 10 00 E8 03 00 00` | producer heartbeat 1000 ms |
 
 ## C. Deleted objects must abort
 
-| Send | Expect |
-|---|---|
-| `61F#40 00 60 00 00 00 00 00` (pHValue) | `59F#80 00 60 00 00 00 02 06` |
-| `61F#40 00 22 00 00 00 00 00` (pHCalibrationCommand) | `59F#80 00 22 00 00 00 02 06` |
-| `61F#40 10 22 00 00 00 00 00` (TempOffset) | `59F#80 10 22 00 00 00 02 06` |
-| `61F#40 20 22 00 00 00 00 00` (pHElectrodeStatus) | `59F#80 20 22 00 00 00 02 06` |
-| `61F#40 22 22 23 00 00 00 00` (vendor demo entry) | `59F#80 22 22 23 00 00 00 06` or `…02 06` — any abort; **not** a string |
+| Send COB-ID | DLC | Data | Expect COB-ID | DLC | Data | Object |
+|---|---|---|---|---|---|---|
+| 0x61F | 8 | `40 00 60 00 00 00 00 00` | 0x59F | 8 | `80 00 60 00 00 00 00 08` | 0x6000 pHValue (verified 2026-09-30) |
+| 0x61F | 8 | `40 00 22 00 00 00 00 00` | 0x59F | 8 | `80 00 22 00 00 00 00 08` | 0x2200 pHCalibrationCommand |
+| 0x61F | 8 | `40 10 22 00 00 00 00 00` | 0x59F | 8 | `80 10 22 00 00 00 00 08` | 0x2210 TempOffset |
+| 0x61F | 8 | `40 20 22 00 00 00 00 00` | 0x59F | 8 | `80 20 22 00 00 00 00 08` | 0x2220 pHElectrodeStatus |
+| 0x61F | 8 | `40 22 22 23 00 00 00 00` | 0x59F | 8 | `80 22 22 23 00 00 00 08` | 0x2222:23 vendor demo — must be an abort, NOT a string |
 
 ## D. NMT start → RUNNING
 
-| Send | Expect |
-|---|---|
-| `000#01 1F` | `71F#05` (OP); within 2 s: `29F#03 qq qq 00` then `19F#mm mm tt tt` |
+| Send COB-ID | DLC | Data | Meaning |
+|---|---|---|---|
+| 0x000 | 2 | `01 1F` | NMT start node 31 |
 
-`19F` repeats at ≤1000 ms (event timer) and on a delta; `29F` at ≤5000 ms
-and on any SensorStatus bit change.
+Expect:
 
-| Send | Expect |
-|---|---|
-| `61F#40 41 60 00 00 00 00 00` during the first 2 s | `59F#4B 41 60 00 43 02 00 00` — 0x0243: ready bits + warming-up (bit 6) + remote |
-| same, after 2 s | `59F#4B 41 60 00 03 02 00 00` — 0x0203 |
-| `61F#40 00 23 00 00 00 00 00` | `59F#4F 00 23 00 03 00 00 00` — SensorStatus: electrode + temp OK |
-| `61F#40 01 10 00 00 00 00 00` | `59F#4F 01 10 00 00 00 00 00` — ErrorRegister 0 |
+| COB-ID | DLC | Data | Meaning |
+|---|---|---|---|
+| 0x71F | 1 | `05` | OPERATIONAL |
+| 0x29F | 4 | `03 qq qq 00` | within 2 s: SensorStatus 03, pH quality, temp quality, ErrReg 00 |
+| 0x19F | 4 | `mm mm tt tt` | within 2 s, then every ≤1000 ms and on a delta |
+
+`0x29F` repeats every ≤5000 ms and on any SensorStatus bit change.
+
+| Send COB-ID | DLC | Data | Expect COB-ID | DLC | Data | Meaning |
+|---|---|---|---|---|---|---|
+| 0x61F | 8 | `40 41 60 00 00 00 00 00` (in first 2 s) | 0x59F | 8 | `4B 41 60 00 43 02 00 00` | StatusWord 0x0243: ready bits + warming-up + remote |
+| 0x61F | 8 | `40 41 60 00 00 00 00 00` (after 2 s) | 0x59F | 8 | `4B 41 60 00 03 02 00 00` | 0x0203 |
+| 0x61F | 8 | `40 00 23 00 00 00 00 00` | 0x59F | 8 | `4F 00 23 00 03 00 00 00` | SensorStatus: electrode + temp OK |
+| 0x61F | 8 | `40 01 10 00 00 00 00 00` | 0x59F | 8 | `4F 01 10 00 00 00 00 00` | ErrorRegister 0 |
 
 ## E. Live measurement objects
 
-| Send | Expect |
-|---|---|
-| `61F#40 03 60 00 00 00 00 00` | `59F#4B 03 60 00 xx xx 00 00` — mV×10. pH-7 buffer ≈ 10240 = `00 28`; must equal TPDO1 bytes 0-1 |
-| `61F#40 10 60 00 00 00 00 00` | `59F#4B 10 60 00 xx xx 00 00` — °C×10 (22.0 °C = `DC 00`); must equal TPDO1 bytes 2-3; hand-warm the probe → rises |
-| `61F#40 01 60 00 00 00 00 00` | `59F#4F 01 60 00 qq 00 00 00` — pH quality 0-100 (≥90 settled in buffer) |
-| `61F#40 11 60 00 00 00 00 00` | `59F#4F 11 60 00 64 00 00 00` — temp quality 100 (CRC ok) |
-| `61F#40 02 60 00 00 00 00 00` | `59F#4F 02 60 00 02 00 00 00` — pH driver state 2 = READY |
-| `61F#40 12 60 00 00 00 00 00` | `59F#4F 12 60 00 0x …` — temp state 1/2/3 cycling (converting/reading/ready) |
-| `61F#40 00 24 00 00 00 00 00` | `59F#4B 00 24 00 0A 00 00 00` — mV delta threshold 10 = 1.0 mV |
-| `61F#40 01 24 00 00 00 00 00` | `59F#4B 01 24 00 05 00 00 00` — temp delta 0.5 °C |
+| Send COB-ID | DLC | Data | Expect COB-ID | DLC | Data | Meaning |
+|---|---|---|---|---|---|---|
+| 0x61F | 8 | `40 03 60 00 00 00 00 00` | 0x59F | 8 | `4B 03 60 00 xx xx 00 00` | mV×10. pH-7 buffer ≈ 10240 = `00 28`. Must equal 0x19F bytes 0-1 |
+| 0x61F | 8 | `40 10 60 00 00 00 00 00` | 0x59F | 8 | `4B 10 60 00 xx xx 00 00` | °C×10 (22.0 °C = `DC 00`). Must equal 0x19F bytes 2-3; hand-warm → rises |
+| 0x61F | 8 | `40 01 60 00 00 00 00 00` | 0x59F | 8 | `4F 01 60 00 qq 00 00 00` | pH quality 0-100 (≥ 0x5A settled in buffer) |
+| 0x61F | 8 | `40 11 60 00 00 00 00 00` | 0x59F | 8 | `4F 11 60 00 64 00 00 00` | temp quality 100 (CRC OK) |
+| 0x61F | 8 | `40 02 60 00 00 00 00 00` | 0x59F | 8 | `4F 02 60 00 02 00 00 00` | pH driver state 2 = READY |
+| 0x61F | 8 | `40 12 60 00 00 00 00 00` | 0x59F | 8 | `4F 12 60 00 0x 00 00 00` | temp driver state 1/2/3 cycling |
+| 0x61F | 8 | `40 00 24 00 00 00 00 00` | 0x59F | 8 | `80 00 24 00 00 00 00 08` | 0x2400 deleted (after Architect regen #2; before it the object still answers `0A 00` but nothing reads it) |
+| 0x61F | 8 | `40 00 18 03 00 00 00 00` | 0x59F | 8 | `4B 00 18 03 F4 01 00 00` | TPDO1 inhibit time 500 × 100 µs = 50 ms |
+| 0x61F | 8 | `40 00 18 05 00 00 00 00` | 0x59F | 8 | `4B 00 18 05 E8 03 00 00` | TPDO1 event timer 1000 ms |
 
-## F. Config write (what the MIK does on connect)
+## F. TPDO1 cadence (standard comm params; do this in PRE-OP)
 
-| Send | Expect |
-|---|---|
-| `61F#2B 00 24 00 32 00 00 00` | `59F#60 00 24 00 00 00 00 00` — threshold = 50 (5.0 mV) |
-| `61F#40 00 24 00 00 00 00 00` | `59F#4B 00 24 00 32 00 00 00` — reads back |
-| `61F#2B 00 24 00 0A 00 00 00` | `59F#60 …` — restore 10 |
+There are no threshold objects any more. The stack sends TPDO1 on every
+process-image change (one per 400 ms electrode sample when RUNNING) subject
+to the inhibit time, and at least every event-timer period. Cap the rate
+with 0x1800:03 (units of 100 µs):
 
-Delta trigger: with threshold 10, move the electrode pH 7 → pH 4 buffer.
-Expect a `19F` within 500 ms of the change (inhibit time), not only at the
-1 s event timer. Power-cycle → threshold is back to 10 (no persistence).
+| Send COB-ID | DLC | Data | Expect COB-ID | DLC | Data | Meaning |
+|---|---|---|---|---|---|---|
+| 0x000 | 2 | `80 1F` | 0x71F `7F` | | | PRE-OP first (comm params) |
+| 0x61F | 8 | `2B 00 18 03 10 27 00 00` | 0x59F | 8 | `60 00 18 03 00 00 00 00` | inhibit = 10000 → 1 s |
+| 0x61F | 8 | `40 00 18 03 00 00 00 00` | 0x59F | 8 | `4B 00 18 03 10 27 00 00` | reads back |
+| 0x000 | 2 | `01 1F` | 0x71F `05` | | | OP → `0x19F` now ≤ 1 Hz |
+| 0x000 | 2 | `80 1F` then `2B 00 18 03 F4 01 00 00` | `60 00 18 03 …` | | | restore 500 (50 ms) |
+
+Power-cycle → back to 500 (no persistence). With the default 50 ms inhibit,
+expect **one `0x19F` per new sample**, never two within 50 ms carrying
+different data (the 2026-09-30 duplicate bug is fixed), and one at least
+every 1000 ms when the value is static.
 
 ## G. ControlWord fault reset (edge-triggered)
 
-Fault reset is a **rising edge on bit 7**; a repeated `84` is a no-op.
-RPDO1 is event-driven (no SYNC needed):
+Fault reset is a **rising edge on bit 7**; a repeated `84` frame is a no-op.
+RPDO1 is event-driven, no SYNC needed. Send both, in order:
 
-```
-21F#04 00        then        21F#84 00
-```
+| Send COB-ID | DLC | Data | Meaning |
+|---|---|---|---|
+| 0x21F | 2 | `04 00` | ControlWord 0x0004 (bit 7 low) |
+| 0x21F | 2 | `84 00` | ControlWord 0x0084 (bit 7 rising edge) |
 
-or by SDO: `61F#2B 40 60 00 04 00 00 00` then `61F#2B 40 60 00 84 00 00 00`.
+Same thing by SDO:
 
-With nothing faulted this is silent (no EMCY 0x0000 — nothing to clear),
-except the state machine runs DISABLED → WARMING_UP → RUNNING again
-(StatusWord shows 0x0243 for 2 s).
+| Send COB-ID | DLC | Data |
+|---|---|---|
+| 0x61F | 8 | `2B 40 60 00 04 00 00 00` |
+| 0x61F | 8 | `2B 40 60 00 84 00 00 00` |
 
-## H. Single sensor fault (module keeps running)
+With nothing faulted this produces **no** EMCY (nothing to clear); the state
+machine just re-runs DISABLED → WARMING_UP → RUNNING (StatusWord 0x0243 for
+2 s, then 0x0203).
 
-**Temp probe unplugged while RUNNING:**
+## H. Single sensor fault — module keeps running
 
-| Expect | Frame |
-|---|---|
-| EMCY within ~1 s | `09F#00 50 21 02 04 00 00 00` — 0x5000, ER 0x21, sensor 2 = temp, state 4 = ERROR |
-| TPDO2 | `29F#01 qq 00 21` — temp-OK bit clear, temp quality 0, ErrReg 0x21 |
-| `61F#40 01 10 00 …` | `59F#4F 01 10 00 21 …` — **SDO and TPDO2 agree** (the old dual-source bug) |
-| `61F#40 41 60 00 …` | `59F#4B 41 60 00 21 02 00 00` — 0x0221: temp-fault bit 5, pH ready, remote |
-| `19F` | keeps coming; temp bytes frozen at the last good value, mV live |
+### H1. Temp probe unplugged while RUNNING
 
-Re-plug the probe → nothing changes (errors latch). Send the G reset →
-`09F#00 00 00 00 00 00 00 00` (EMCY 0x0000), 2 s warm-up, then 0x0203 /
-`29F#03 …` / ErrReg 0.
+| COB-ID | DLC | Data | Expect |
+|---|---|---|---|
+| 0x09F | 8 | `00 50 21 02 04 00 00 00` | EMCY within ~1 s: code 0x5000, ErrReg 0x21, MSEF: sensor 2 = temp, state 4 = ERROR (**verified byte-exact 2026-09-30**) |
+| 0x29F | 4 | `01 qq 64 00` then `01 qq 00 21` | two frames 500 ms apart (TPDO2 inhibit): the driver passes through a retry state before ERROR, so the first frame has the temp-OK bit clear while quality/ErrReg are still old. Cosmetic; the second frame is the settled one. |
+| 0x19F | 4 | `mm mm tt tt` | keeps coming; temp bytes frozen at last good value, mV live (verified: temp stuck at `CE 00` = 20.6 °C) |
 
-**pH ADC removed (pull the pH-2 Click) while RUNNING:**
+| Send COB-ID | DLC | Data | Expect COB-ID | DLC | Data | Meaning |
+|---|---|---|---|---|---|---|
+| 0x61F | 8 | `40 01 10 00 00 00 00 00` | 0x59F | 8 | `4F 01 10 00 21 00 00 00` | **SDO 0x1001 == TPDO2 byte 3** (the old dual-source bug is gone) |
+| 0x61F | 8 | `40 41 60 00 00 00 00 00` | 0x59F | 8 | `4B 41 60 00 21 02 00 00` | 0x0221: temp-fault bit 5, pH ready, remote |
 
-| Expect | Frame |
-|---|---|
-| EMCY within ~0.5 s | `09F#00 50 21 01 03 00 00 00` — sensor 1 = pH, state 3 = ERROR |
-| `61F#40 41 60 00 …` | `59F#4B 41 60 00 12 02 00 00` — 0x0212: pH-fault bit 4, temp ready, remote |
+Re-plug the probe → nothing changes (errors latch). Send the G reset:
 
-**Boot with the temp probe unplugged (new in 4.0.0 — was silent before):**
+| COB-ID | DLC | Data | Expect |
+|---|---|---|---|
+| 0x09F | 8 | `00 00 00 00 00 00 00 00` | EMCY 0x0000 error reset |
+| 0x29F | 4 | `03 qq qq 00` | after the 2 s warm-up |
+| SDO 0x6041 | | `03 02` | 0x0203 again |
 
-| Expect | Frame |
-|---|---|
-| right after boot-up, still PRE-OP | `09F#00 50 21 02 04 00 00 00` |
-| `000#01 1F` | module reaches RUNNING on pH alone (0x0221), TPDO1 flowing |
-| plug in, then `21F#04 00` / `21F#84 00` | init retried: EMCY 0x0000, 0x0203, temp live |
+### H2. pH ADC removed (pull the pH-2 Click) while RUNNING
 
-**Boot with the pH ADC absent:** same pattern with `01 03`; module runs on
-temp alone (0x0212). Old firmware faulted here (warm-up race).
+| COB-ID | DLC | Data | Expect |
+|---|---|---|---|
+| 0x09F | 8 | `00 50 21 01 03 00 00 00` | EMCY within ~0.5 s: sensor 1 = pH, state 3 = ERROR |
+| SDO 0x6041 | | `4B 41 60 00 12 02 00 00` | 0x0212: pH-fault bit 4, temp ready, remote |
+
+**Unplugging only the electrode (not the Click) is a different case and
+produces NO EMCY — by design.** The ADC still answers on I2C, so nothing is
+"faulted"; the module cannot tell an open electrode from a real reading.
+Verified 2026-09-30: electrode out → mV drifted to ~917–957 (not 0) and
+**pH quality on 0x29F byte 1 fell from 0x41 (65 %) to 0x0A (10 %) within
+500 ms**; electrode back → mV ≈ 10140, quality back to 0x56. That quality
+drop is the host-side disconnect signal the MIK is expected to use.
+
+### H3. Boot with the temp probe unplugged (new in 4.0.0 — was silent)
+
+| Step | COB-ID | DLC | Data | Expect |
+|---|---|---|---|---|
+| power on | 0x09F | 8 | `00 50 21 02 04 00 00 00` | right after boot-up, still PRE-OP |
+| send | 0x000 | 2 | `01 1F` | module reaches RUNNING on pH alone: StatusWord 0x0221, 0x19F flowing |
+| plug in, send | 0x21F | 2 | `04 00` then `84 00` | init retried: EMCY `00 00 …`, StatusWord 0x0203, temp live |
+
+### H4. Boot with the pH ADC absent
+
+Same as H3 with MSEF `01 03`; module runs on temp alone (StatusWord 0x0212).
+Old firmware faulted here (warm-up race) — this must now reach RUNNING.
 
 ## I. Both sensors faulted → FAULT
 
-Unplug both while RUNNING:
+Unplug both while RUNNING. Expect:
 
-| Expect | Frame |
-|---|---|
-| two EMCY 0x5000 (order varies) | `09F#00 50 21 01 03 …`, `09F#00 50 21 02 04 …` |
-| EMCY 0xFF00, cause 2 | `09F#00 FF 21 02 03 04 00 00` — both channels faulted; MSEF = pH state, temp state |
-| `61F#40 41 60 00 …` | `59F#4B 41 60 00 38 02 00 00` — 0x0238: fault + pH-fault + temp-fault + remote |
-| `61F#40 00 23 00 …` | `59F#4F 00 23 00 08 …` — SensorStatus fault bit only |
-| TPDO1 | stops (no delta triggering in FAULT); event timer still emits stale values |
+| COB-ID | DLC | Data | Meaning |
+|---|---|---|---|
+| 0x09F | 8 | `00 50 21 01 03 00 00 00` | pH sensor fault (order of the two 0x5000 may vary) |
+| 0x09F | 8 | `00 50 21 02 04 00 00 00` | temp sensor fault |
+| 0x09F | 8 | `00 FF 21 02 03 04 00 00` | **EMCY 0xFF00, cause 2 = both channels faulted**; MSEF = pH state, temp state |
+| 0x19F | 4 | stale | no delta triggering in FAULT; event timer still emits the last values |
 
-Reset with both still unplugged: EMCY 0x0000, then both 0x5000 again, then
-after 2 s `09F#00 FF 21 01 03 04 00 00` (cause 1 = nothing ready after
-warm-up). Reset with both plugged in: EMCY 0x0000 → RUNNING.
+| Send COB-ID | DLC | Data | Expect COB-ID | DLC | Data | Meaning |
+|---|---|---|---|---|---|---|
+| 0x61F | 8 | `40 41 60 00 00 00 00 00` | 0x59F | 8 | `4B 41 60 00 38 02 00 00` | 0x0238: fault + pH-fault + temp-fault + remote |
+| 0x61F | 8 | `40 00 23 00 00 00 00 00` | 0x59F | 8 | `4F 00 23 00 08 00 00 00` | SensorStatus: fault bit only |
+| 0x61F | 8 | `40 01 10 00 00 00 00 00` | 0x59F | 8 | `4F 01 10 00 21 00 00 00` | ErrReg 0x21 |
 
-## J. NMT stop / pre-op
+Reset (G) with both still unplugged:
 
-| Send | Expect |
-|---|---|
-| `000#80 1F` (pre-op) | `71F#7F`, TPDOs stop; `6041` → 0x0003 (no remote bit); SDO still answers |
-| `000#02 1F` (stop) | `71F#04`; SDO does **not** answer |
-| `000#01 1F` | back to D |
-| `000#81 1F` (reset node) | `71F#00` boot-up, then `7F`; thresholds back to defaults |
+| COB-ID | DLC | Data | Meaning |
+|---|---|---|---|
+| 0x09F | 8 | `00 00 00 00 00 00 00 00` | reset accepted |
+| 0x09F | 8 | `00 50 21 01 03 00 00 00` | re-announced |
+| 0x09F | 8 | `00 50 21 02 04 00 00 00` | re-announced |
+| 0x09F | 8 | `00 FF 21 01 03 04 00 00` | after 2 s: cause 1 = nothing ready after warm-up |
+
+Reset with both plugged back in: `00 00 …` only, then RUNNING.
+
+## J. NMT stop / pre-op / reset
+
+| Send COB-ID | DLC | Data | Expect | Meaning |
+|---|---|---|---|---|
+| 0x000 | 2 | `80 1F` | 0x71F `7F`; TPDOs stop; SDO 0x6041 → `03 00` (0x0003, no remote bit); SDO still answers | enter PRE-OP |
+| 0x000 | 2 | `02 1F` | 0x71F `04`; SDO does **not** answer | STOPPED |
+| 0x000 | 2 | `01 1F` | back to section D | start |
+| 0x000 | 2 | `81 1F` | 0x71F `00` then `7F`; 0x1800:03 back to `F4 01` | reset node |
 
 ## K. Both units on the bus together
 
-| Send | Expect |
-|---|---|
-| `000#01 00` (start all) | `71F#05` and `720#05`; `19F`/`1A0`, `29F`/`2A0` interleave with no overlap; both SDO channels answer independently |
-| `61F#40 18 10 03 …` and `620#40 18 10 03 …` | both return `00 00 02 00` |
+| Send COB-ID | DLC | Data | Expect |
+|---|---|---|---|
+| 0x000 | 2 | `01 00` | 0x71F `05` **and** 0x720 `05`; 0x19F/0x1A0 and 0x29F/0x2A0 interleave with no collisions |
+| 0x61F | 8 | `40 18 10 03 00 00 00 00` | 0x59F `43 18 10 03 00 00 02 00` |
+| 0x620 | 8 | `40 18 10 03 00 00 00 00` | 0x5A0 `43 18 10 03 00 00 02 00` |
 
-## What "functioning as normal" means for this build
+## Pass bar — "functioning as normal" for this build
 
-- A, B, C, D, E pass on both nodes.
-- H: SDO 0x1001 equals TPDO2 byte 3 at every step, and every fault episode
-  produces exactly one 0x5000 EMCY.
-- I: one 0xFF00 per FAULT entry, one 0x0000 per accepted reset.
-- Nothing on `19F`/`29F` longer than 4 bytes; nothing answers on 0x6000.
-- RTT shows `DIAG:` lines every 5 s with `ER=` matching the SDO read.
+- A through E pass on both nodes; every SDO reply matches the table.
+- H: SDO 0x1001 equals 0x29F/0x2A0 byte 3 at every step; exactly one 0x5000
+  EMCY per fault episode.
+- I: exactly one 0xFF00 per FAULT entry and one 0x0000 per accepted reset.
+- No frame on 0x19F/0x1A0 or 0x29F/0x2A0 with DLC other than 4; nothing
+  answers on object 0x6000.
+- RTT `DIAG:` lines every 5 s show `ER=` equal to the SDO read of 0x1001.

@@ -14,6 +14,14 @@ Temperature ×10), but the gateway override needs `scale: 0.1`. Build text
 41384 B. Gateway copies NOT yet updated. Next: commit → gateway cutover →
 flash → re-validate.
 
+**REGEN #2 DONE 2026-09-30 12:38** (`docs/PHTEMP_ARCHITECT_REGEN_2_THRESHOLDS.md`
+sections A, B and D all applied): 0x2400/0x2401/0x2402 deleted, dead comm
+objects 0x1002/1006/1007/1010/1011/1012/1013/1019/1020 deleted (0x1028,
+0x1016, 0x1017 kept), RevisionNumber 0x00020000 now genuine tool output
+(.cax synced, hand-edit markers gone), PIMGEND 0x68 → 0x47, PDO comm/mapping
+unchanged, NODEID_DCF 0x04. Optional objects 34 → 25, manufacturer 5 → 2.
+Build text 40932 B. Section C below (rename of 0x2400) is historical.
+
 **Purpose.** Mechanical, one-pass edit list for the phtemp Object Dictionary in
 CANopen Architect (Windows, `E:\ursaScience\Modules\Modules-1000kbs.cax`), to
 match the Step-1 firmware strip. After these edits: regenerate, copy the output
