@@ -25,6 +25,7 @@
 #include "mco_events.h"
 #include "sensor_control.h"
 #include "log.h"
+#include "SEGGER_RTT.h"
 #include <string.h>
 /* USER CODE END Includes */
 
@@ -78,7 +79,9 @@ static void MX_USART2_UART_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-// Printf redirection — routes through non-blocking ring buffer
+// Printf redirection — routes to SEGGER RTT via Log_PutChar. Safe at any
+// time (RTT self-initialises on first write), so the boot banner needs no
+// blocking UART fallback and printf never touches USART2.
 #ifdef __GNUC__
 #define PUTCHAR_PROTOTYPE int __io_putchar(int ch)
 #else
@@ -139,11 +142,9 @@ int main(void)
 	HAL_NVIC_DisableIRQ(I2C1_EV_IRQn);
 	HAL_NVIC_DisableIRQ(I2C1_ER_IRQn);
 
-	// Initialize non-blocking ring-buffer logging via USART2
+	// Initialize logging: SEGGER RTT over SWD (same as the pump). USART2 is
+	// initialised by CubeMX but idle — no TXE interrupt, no serial adapter.
 	Log_Init(&huart2);
-	// Enable USART2 global interrupt (for TXE ring-buffer drain)
-	HAL_NVIC_SetPriority(USART2_IRQn, 3, 0);
-	HAL_NVIC_EnableIRQ(USART2_IRQn);
 
 #if DEBUG_MASTER_ENABLE
 	printf("\r\n=== CANopen pH-Temperature Module (CiA 404) ===\r\n");
@@ -720,17 +721,14 @@ void Error_Handler(void)
   /* USER CODE BEGIN Error_Handler_Debug */
 	/* Diagnostic output + red LED blink before halting.
 	 * This function may be called very early (before Log_Init / LEDControl_Init),
-	 * so we use only blocking UART and direct GPIO — no ring-buffer log, no PWM. */
+	 * so we use only RTT and direct GPIO — no PWM, no UART. */
 
-	/* ── Blocking UART diagnostic (before IRQ disable) ── */
-	{
-		const char msg[] =
-				"\r\n[FATAL] Error_Handler() entered — system halted\r\n";
-		/* huart2 is file-scope; if USART2 was already initialised the transmit
-		 * will succeed.  If called before MX_USART2_UART_Init() the write is
-		 * harmless (HAL returns HAL_ERROR and we proceed). */
-		HAL_UART_Transmit(&huart2, (const uint8_t*) msg, sizeof(msg) - 1, 50);
-	}
+	/* ── RTT diagnostic (before IRQ disable) ── */
+	/* RTT self-initialises on first write, so this is safe at any point;
+	 * the message stays readable in the RAM buffer even after the halt
+	 * (probe-rs/RTT viewer, or GDB symbol _SEGGER_RTT). */
+	SEGGER_RTT_WriteString(0,
+			"\r\n[FATAL] Error_Handler() entered — system halted\r\n");
 
 	__disable_irq();
 

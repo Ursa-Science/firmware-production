@@ -10,7 +10,18 @@ Last updated: 2026-09-22. Pump dose-strip refactor COMPLETE + HW-validated
 backstop done). Pump runs at node 1 (master/MIK on a HIGH node ID → old node-1
 HB collision moot).
 
-**PHTEMP DUMB-MODULE REFACTOR (2026-09-22, UNCOMMITTED on
+**PHTEMP 2026-09-30:** fw 4.0.0 committed (3f3c7e1). **Gateway cutover DONE +
+validated on the reference machine (calibration works).** Commissioning two
+field units at **node 31 + 32, 250k**: `add_ursa_device(phtemp NODE_IDS 4 31
+32)` + presets; images validated (differ from n04 by 3 bytes). **Logging
+moved to SEGGER RTT/SWD like the pump** (log.c backend swap, USART2 idle,
+Error_Handler via RTT; +76 B text, bss 4884→8132 for the 4 K up-buffer).
+View: `probe-rs attach --chip STM32G431KBTx build/phtemp-n31-250k.elf`.
+Bench script for the two units: `docs/PHTEMP_BENCH_TEST_N31_N32.md` (CANopen
+Magic frames + expected replies, incl. fault/EMCY cases). Gateway still needs
+`-n31`/`-n32` EDS+DCF pairs. Uncommitted: node IDs, RTT switch, both docs.
+
+**PHTEMP DUMB-MODULE REFACTOR (2026-09-22, committed 3f3c7e1 on
 build/node-id-parameter):** OD regenerated (11 cal objects gone, TPDO1 6→4 B
 = mV|temp, 0x2400 = MillivoltDeltaThreshold) + firmware rewired + 7 review
 fixes (0x1001 to BOTH homes, EMCY 0x5000/0xFF00/0x0000, warm-up latch,
@@ -70,9 +81,10 @@ doses at correct 1/8 (pin-implied); SpreadCycle + current UNVERIFIED. Next step:
 remove module + re-measure PDN idle. Full writeup + test plan:
 docs/PUMP_TMC2209_RX_DEAD_DEBUG_TICKET.md.
 
-Branch build/node-id-parameter HEAD = 7f914db (main = 4f34e36 + docs). Pump
-image = build/pump-n01-250k.bin (FW 2.0.0). Phtemp image =
-build/phtemp-n04-250k.bin (FW 4.0.0, 2026-09-22, NOT yet flashed/validated).
+Branch build/node-id-parameter HEAD = 3f3c7e1 + uncommitted (main = 4f34e36 +
+docs). Pump image = build/pump-n01-250k.bin (FW 2.0.0). Phtemp images =
+build/phtemp-n{04,31,32}-250k.bin (FW 4.0.0 + RTT logging, 2026-09-30, NOT
+yet flashed/bench-validated).
 
 ---
 

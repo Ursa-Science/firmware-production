@@ -267,7 +267,8 @@ void TIM7_IRQHandler(void)
 /* USER CODE BEGIN 1 */
 /**
  * @brief This function handles USART2 global interrupt.
- * @note  Drains the log ring buffer via TXE — one byte per interrupt.
+ * @note  Legacy: logging moved to SEGGER RTT (SWD), so the USART2 IRQ is
+ *        never enabled and Log_TxISR() is a no-op. Kept so the vector links.
  */
 void USART2_IRQHandler(void) {
 	Log_TxISR();

@@ -1,11 +1,14 @@
 /**
  ******************************************************************************
  * @file    log.h
- * @brief   Non-blocking ring-buffer logging with subsystem debug control
- * @note    All DBG_* macros route through Log_Write(), which enqueues
- *          formatted text into a 1 KB ring buffer.  The USART2 TXE ISR
- *          drains the buffer one byte per interrupt, giving zero-blocking
- *          behaviour.
+ * @brief   Non-blocking logging over SEGGER RTT with subsystem debug control
+ * @note    All DBG_* macros route through Log_Write(), which formats into a
+ *          stack buffer and writes it to SEGGER RTT channel 0 (a RAM buffer
+ *          drained by the debug probe over SWD).  Same backend as the pump;
+ *          the old USART2 TXE ring buffer is gone.
+ *          Call Log_Init(&huart2) once at boot (huart kept for API compat,
+ *          unused).  Log_TxISR() is a legacy no-op retained for
+ *          stm32g4xx_it.c.
  *
  ******************************************************************************
  */
@@ -22,12 +25,8 @@ extern "C" {
 #include "stm32g4xx_hal.h"
 
 /*============================================================================*/
-/*                         RING BUFFER CONFIGURATION                          */
+/*                        FORMAT BUFFER CONFIGURATION                         */
 /*============================================================================*/
-
-/** Ring buffer size — must be power of 2 */
-#define LOG_RING_SIZE       1024u
-#define LOG_RING_MASK       (LOG_RING_SIZE - 1u)
 
 /** Max formatted message length (stack-allocated per Log_Write call) */
 #define LOG_FMT_BUF_SIZE    128u

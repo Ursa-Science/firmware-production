@@ -282,6 +282,23 @@ Text 42172 → 42100 (regen) → 41384 B (review fixes: EmSA 0x2222 demo SDO
 buffers gone, float path gone). Full record and the seven review fixes:
 `docs/PHTEMP_REFACTOR_PLAN.md`, `docs/PHTEMP_EDS_REGEN_CHANGELIST.md`.
 
+### phtemp logging → SEGGER RTT (2026-09-30)
+
+Same switch the pump made in `28e2a3f`: `SEGGER_RTT.{c,h}` +
+`SEGGER_RTT_Conf.h` copied from `devices/pump/Core` (V8.10k, 4 K up-buffer,
+NO_BLOCK_SKIP, PRIMASK lock), `log.c` backend replaced (API unchanged),
+`__io_putchar` and `Error_Handler` route to RTT, USART2 IRQ no longer
+enabled (`USART2_IRQHandler` → no-op `Log_TxISR` kept for the vector).
+`MX_USART2_UART_Init()` still runs (CubeMX code) but the peripheral is idle.
+Cost: +76 B text, +3248 B bss (8132 of 32 K). Ring-buffer defines removed
+from `log.h`. View: `probe-rs attach --chip STM32G431KBTx
+build/phtemp-nNN-250k.elf` — non-halting, the IWDG keeps running. Valve is
+the last device on the USART2 ring buffer.
+
+Two field units commissioned at nodes 31/32 (`NODE_IDS 4 31 32`); images
+differ from n04 by exactly 3 bytes (two NODEID literals + 1014h readback).
+Bench script: `docs/PHTEMP_BENCH_TEST_N31_N32.md`.
+
 ---
 
 ## What has NOT worked / gotchas
