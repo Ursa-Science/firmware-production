@@ -190,6 +190,19 @@ EMCYs from the application (stack ones such as 0x8130 heartbeat unchanged):
 | 0x5000 | sensor fault, once per episode | 1 = pH ADC, 2 = temp probe | driver state |
 | 0xFF00 | module entered FAULT | 1 = no channel ready after warm-up, 2 = both channels faulted, 3 = stack emergency stop | pH state, temp state |
 | 0x0000 | ControlWord bit-7 reset accepted | — | — |
+| 0x8130 (stack) | master heartbeat lost (>2.5 s without node 127's beat) — node drops to PRE-OP, TPDOs stop | 127 | — |
+| 0x8130 cleared (stack) | master heartbeat back — 0x1001 bit 0 released by firmware | 127 | — |
+
+### 4.7 Heartbeat requirement (new 2026-09-30)
+
+The module consumes the MIK's heartbeat: **node 127, 1000 ms, timeout
+2500 ms**, same as the pump. If the MIK stops beating for 2.5 s the module
+sends EMCY 0x8130, goes PRE-OPERATIONAL and stops publishing. It does not
+FAULT and does not need a ControlWord reset. When the MIK is back it must
+**send NMT start again** (`01 NN`); the module warms up for 2 s and resumes.
+0x1001 returns to 0 on its own when the heartbeat reappears. So: keep the
+1 s heartbeat alive the whole time any module is OPERATIONAL, and treat a
+0x8130 from a module as "my own heartbeat stopped", not as a module fault.
 
 A single faulted channel does **not** put the module in FAULT; it keeps
 publishing the other channel. Surface bit 5 + the 0x5000 EMCY as a warning,

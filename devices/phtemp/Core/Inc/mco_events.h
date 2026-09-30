@@ -19,7 +19,8 @@ typedef enum {
 	MCO_EVENT_FATAL_ERROR, 		// MCOUSER_FatalError — fatal/warning from stack
 	MCO_EVENT_COMM_RESET,	// MCOUSER_ResetCommunication — stack (re)init done
 	MCO_EVENT_NMT_CHANGE,		// MCOUSER_NMTChange — NMT state transition
-	MCO_EVENT_HEARTBEAT_LOST	// MCOUSER_HeartbeatLost — consumer node timeout
+	MCO_EVENT_HEARTBEAT_LOST,	// MCOUSER_HeartbeatLost — consumer node timeout
+	MCO_EVENT_HEARTBEAT_RESTORED	// MCOUSER_EMCY(ev_clr, 0x8130) — consumer node back
 } MCO_EventType_t;
 
 /* Event payload (tagged union) ----------------------------------------------*/
@@ -29,7 +30,7 @@ typedef struct {
 		uint8_t error_code;		// FATAL_ERROR: EmSA error code
 		uint8_t init_result;	// COMM_RESET:  1 = stack init OK, 0 = failed
 		uint8_t nmt_state;		// NMT_CHANGE:  new NMT state value
-		uint8_t node_id;		// HEARTBEAT_LOST: node that timed out
+		uint8_t node_id;		// HEARTBEAT_LOST / HEARTBEAT_RESTORED: node that timed out / came back
 
 	};
 } MCO_Event_t;

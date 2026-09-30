@@ -16,6 +16,10 @@
  *          - ErrorRegister (0x1001) written to BOTH homes (process image for
  *            TPDO2, gMCOConfig for SDO + EMCY) and EMCYs on sensor loss /
  *            FAULT / reset (see the ERREG_* / EMCY_* defines below)
+ *          - Master heartbeat lost (consumer armed in user_STM32.c, node 127,
+ *            2.5 s): the stack sends EMCY 0x8130 and forces PRE-OP; we only
+ *            log it (no FAULT) and clear the stack's ErrorRegister bit 0 when
+ *            the heartbeat returns, so the MIK resumes with a plain NMT start.
  *
  *          "Dumb module" (docs/PHTEMP_REFACTOR_PLAN.md): raw electrode mV +
  *          temperature + health only. No pH/Nernst/calibration on-module —
@@ -637,8 +641,25 @@ static void SensorControl_HandleMCOEvent(const MCO_Event_t *event) {
 		break;
 
 	case MCO_EVENT_HEARTBEAT_LOST:
-		DBG_ERROR(SENSOR, "Heartbeat lost: node=%u", event->node_id);
-		SensorControl_EmergencyStop();
+		/* Master (MIK) heartbeat gone. The stack has already pushed EMCY 0x8130
+		 * and is about to force PRE-OP: TPDOs stop and the NMT gate above drops
+		 * us to DISABLED next loop. Deliberately NOT a FAULT — that would latch
+		 * until a ControlWord reset after the master returns. Resume = the
+		 * master's next NMT start (warm-up, then RUNNING). */
+		DBG_ERROR(SENSOR, "Heartbeat lost: node=%u -> PRE-OP (stack)",
+				event->node_id);
+		break;
+
+	case MCO_EVENT_HEARTBEAT_RESTORED:
+		/* The stack set ErrorRegister bit 0 on 0x8130 and never clears it.
+		 * Clear it now if the application itself has nothing to report, so
+		 * 0x1001 reads 0x00 again without a ControlWord reset. The PI copy
+		 * mirrors the merged register so TPDO2 and SDO stay in agreement. */
+		DBG_STATE(SENSOR, "Heartbeat restored: node=%u", event->node_id);
+		if (sensor_ctrl.last_err_reg == 0) {
+			gMCOConfig.error_register &= (uint8_t) ~ERREG_GENERIC;
+			ProcImg_SetErrorRegister(gMCOConfig.error_register);
+		}
 		break;
 	}
 }

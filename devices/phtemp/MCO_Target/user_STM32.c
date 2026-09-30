@@ -129,6 +129,18 @@ NOTE:    This function normally calls MCO_DefaultResetCommunication().
 RETURNS: FALSE, if initialization was not successful
          TRUE, if initialization was successful
 **************************************************************************/
+/* Master-heartbeat consumer (same numbers as the pump): watch the MIK's 1 s
+ * heartbeat as node 127. On loss the STACK (mcop.c MCOP_ProcessHBCheck) pushes
+ * EMCY 0x8130, calls MCOUSER_HeartbeatLost(), drops the node to PRE-OP (TPDOs
+ * stop, sensor state machine goes DISABLED via its NMT gate) and re-arms the
+ * consumer. Recovery is announced by the stack too (MCOUSER_EMCY with ev_clr,
+ * see user_cbdata.c). Armed here, not via the 0x1016 OD default, so it is
+ * self-contained and re-arms on every comm reset. The consumer sits in
+ * HBCONS_INIT until it sees the master's first heartbeat — no false trip at
+ * boot or on a bench with no master. */
+#define MASTER_HB_NODE_ID     127u   // master/MIK node ID (1 s heartbeat producer)
+#define MASTER_HB_TIMEOUT_MS  2500u  // 2.5x the beat: tolerates ~1 dropped HB + jitter
+
 uint8_t MCOUSER_ResetCommunication (void)
 {
   uint8_t result;
@@ -139,6 +151,13 @@ uint8_t MCOUSER_ResetCommunication (void)
 #else
   result = MCO_DefaultResetCommunication(NODEID,CAN_BITRATE,CAN_BRS_BITRATE,DEFAULT_HEARTBEAT);
 #endif
+
+  /* Arm AFTER MCO_DefaultResetCommunication (its MCO_UpdateSystemFromOD would
+   * otherwise clobber this from the empty 0x1016 OD default). */
+  if (result)
+  {
+    MCOP_InitHBConsumer(1, MASTER_HB_NODE_ID, MASTER_HB_TIMEOUT_MS);
+  }
 
 	// Fire event for communication reset, allowing other modules to react (e.g. reinitialize application state, log event, etc.)
 	MCO_Event_t ev = { .type = MCO_EVENT_COMM_RESET, .init_result = result };
@@ -190,14 +209,15 @@ void MCOUSER_HeartbeatLost (
   uint8_t node_id
   )
 {
-	// Fire Event for heartbeat lost
+	// Fire Event for heartbeat lost (sensor_control logs it; no FAULT — a lost
+	// master is a communication event, not a sensor fault, and FAULT would
+	// latch until a ControlWord reset after the master returns).
 	MCO_Event_t ev = { .type = MCO_EVENT_HEARTBEAT_LOST, .node_id = node_id };
 	MCO_Events_Fire(&ev);
 
-
-  // Add code to react on the loss of heartbeat,
-  // if node is essential, switch to pre-operational mode
-  MCO_HandleNMTRequest(NMTMSG_PREOP);
+  // No NMT request here: the stack sets MY_NMT_STATE = NMTSTATE_PREOP itself
+  // right after this callback returns (mcop.c MCOP_ProcessHBCheck) and calls
+  // MCOUSER_NMTChange(). Resume = master sends NMT start again.
 }
 
 

@@ -17,6 +17,7 @@ VERSION:   7.17, EmSA 04-MAR-24
 ***************************************************************************/
 
 #include "mcop_inc.h"
+#include "mco_events.h"   /* MCO_EVENT_HEARTBEAT_RESTORED from MCOUSER_EMCY */
 
 
 #ifdef MCOUSER_MINMAX
@@ -151,6 +152,17 @@ uint8_t MCOUSER_EMCY (
 #endif // USE_CANOPEN_FD
   )
 {
+  /* The stack calls this with ev_clr set when a previously lost heartbeat
+   * consumer sees the master again. Hand it to sensor_control so the stack's
+   * latched ErrorRegister bit 0 can be cleared (the stack sets it on 0x8130
+   * and never clears it itself). Return 0 so the stack still sends its own
+   * recovery EMCY. */
+  if (ev_clr && (emcy_code == EMCY_HB_ERR))
+  {
+    MCO_Event_t ev = { .type = MCO_EVENT_HEARTBEAT_RESTORED, .node_id = em_1 };
+    MCO_Events_Fire(&ev);
+  }
+  (void)em_2; (void)em_3; (void)em_4; (void)em_5;
   return 0;
 }
 #endif // USECB_EMCY

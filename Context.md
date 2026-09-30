@@ -17,7 +17,7 @@ field units at **node 31 + 32, 250k**: `add_ursa_device(phtemp NODE_IDS 4 31
 moved to SEGGER RTT/SWD like the pump** (log.c backend swap, USART2 idle,
 Error_Handler via RTT; +76 B text, bss 4884→8132 for the 4 K up-buffer).
 View: `probe-rs attach --chip STM32G431KBTx build/phtemp-n31-250k.elf`.
-Bench script for the two units: `docs/PHTEMP_BENCH_TEST_N31_N32.md` (CANopen
+Bench script for the two units: `docs/PHTEMP_BENCH_TEST.md` (CANopen
 Magic frames + expected replies, incl. fault/EMCY cases). Gateway still needs
 `-n31`/`-n32` EDS+DCF pairs. **Node 31 BENCH-VALIDATED 2026-09-30** (trace
 cantrace-testing-pHtemp-refactor.csv): identity/rev 0x00020000, TPDOs,
@@ -37,8 +37,13 @@ Files carry the canonical `PH-TempModule-n04-250kbs` name (a first export
 came out named n31 with NodeID still 4 — re-exported 12:38; the gateway
 resolves node ID from the DCF NodeID first, so never ship an "nNN" pair whose
 DCF says another node). Images for n04/n31/n32 built + validated 12:40.
-Remaining for phtemp: commit → gateway EDS re-copy + drop `2400:0` override
-→ re-flash both units → bench: SDO 0x2400 aborts, TPDO1 cadence unchanged. Cadence knob is now the
+**Master-HB consumer added 2026-09-30** (user_STM32.c: node 127, 2500 ms,
+pump numbers; the gateway does NOT write slave 0x1016 — its
+`heartbeat_consumer` means master-watches-slave). Loss → stack EMCY 0x8130 +
+PRE-OP, app logs only (NO FAULT), recovery event clears stack ER bit 0;
+resume = NMT start. Node 5 target added (n04/n05/n31/n32). Remaining for
+phtemp: commit → gateway EDS re-copy + drop `2400:0` override → re-flash →
+bench: SDO 0x2400 aborts, TPDO1 cadence unchanged, playbook §L heartbeat. Cadence knob is now the
 standard 0x1800:03 inhibit (stack `MCO_ApplyPDOparam` accepts SDO writes).
 FE guide §4.5 + playbook E/F updated accordingly.
 Playbook corrected: serial = 0x12345678 (MCOUSER_GetSerial callback, the
@@ -65,7 +70,7 @@ docs/PHTEMP_EDS_REGEN_CHANGELIST.md. Follow-ups: pump/valve still carry the
 
 **NODE ID = BUILD PARAMETER (2026-09-21, branch build/node-id-parameter):**
 `add_ursa_device(<dev> NODE_IDS ...)` → one target per node, `<dev>-nNN`
-(pump-n01, pump-n02, valve-n09, phtemp-n04), each `-DNODEID=<id>` overriding
+(pump-n01, pump-n02, valve-n09, phtemp-n04/n05/n31/n32), each `-DNODEID=<id>` overriding
 NODEID_DCF via the existing `#if !defined(NODEID)` in nodecfg.h. NO bare
 pump/valve/phtemp targets or presets any more — old `build/pump.*` on disk is
 STALE, don't flash it. One canonical EDS/OD per device; NEVER regenerate per node
@@ -194,7 +199,7 @@ firmware-production and retire the staging dir. Do NOT maintain edits in both.
   ff448d83425fe6e78b5c7baf3e8f2b0d; temp probe validated 2026-07-29.
 
 Build all: `cmake --preset default && cmake --build --preset default`
-One device: `cmake --build --preset valve-n09` (pump-n01, pump-n02, phtemp-n04)
+One device: `cmake --build --preset valve-n09` (pump-n01, pump-n02, phtemp-n04, -n05, -n31, -n32)
 → `build/<dev>-nNN-250k.{elf,bin,hex,map}`. No bare `<dev>` targets exist.
 
 ## Layout (post-migration)

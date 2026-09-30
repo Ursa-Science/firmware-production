@@ -297,7 +297,21 @@ the last device on the USART2 ring buffer.
 
 Two field units commissioned at nodes 31/32 (`NODE_IDS 4 31 32`); images
 differ from n04 by exactly 3 bytes (two NODEID literals + 1014h readback).
-Bench script: `docs/PHTEMP_BENCH_TEST_N31_N32.md`.
+Bench script: `docs/PHTEMP_BENCH_TEST.md`.
+
+### phtemp master-heartbeat consumer (2026-09-30)
+
+Armed in `MCOUSER_ResetCommunication` after the default reset
+(`MCOP_InitHBConsumer(1, 127, 2500)`), exactly as the pump. Finding: the
+gateway's `heartbeat_consumer: true` is the master consuming the slave's
+heartbeat; nothing writes a slave's 0x1016, so a module without a
+firmware-armed consumer never notices the master dying. Policy differs from
+the pump on purpose: no FAULT on loss (no actuator to stop; FAULT would need
+a ControlWord reset after the master returns). The stack's own actions on
+loss — EMCY 0x8130, force PRE-OP, `MCOUSER_NMTChange`, re-arm — are enough.
+Added `MCO_EVENT_HEARTBEAT_RESTORED`, fired from `MCOUSER_EMCY(ev_clr,
+EMCY_HB_ERR)`, to release the stack's latched 0x1001 bit 0 (the stack sets
+it on 0x8130 and never clears it). Bench: playbook §L.
 
 ### phtemp Architect regen #2 (2026-09-30) — thresholds + dead comm objects
 

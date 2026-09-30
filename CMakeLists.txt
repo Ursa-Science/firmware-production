@@ -10,4 +10,4 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/stm32g431.cmake")
 # Build one with   cmake --build --preset default --target pump-n02
 add_ursa_device(valve  NODE_IDS 9)
 add_ursa_device(pump   NODE_IDS 1 2)
-add_ursa_device(phtemp NODE_IDS 4 31 32)
+add_ursa_device(phtemp NODE_IDS 4 5 31 32)

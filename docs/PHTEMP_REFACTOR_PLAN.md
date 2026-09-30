@@ -255,6 +255,17 @@ revalidation.
   number (4.0.0). Hand-edited into .eds/.dcf/pimg.h; **sync the .cax before the
   next Architect regen.** 0x1009/0x100A stay "1.0" placeholders for now (see
   "EDS objects that can still go").
+- **Master-heartbeat policy (DECIDED + DONE 2026-09-30).** Consumer armed in
+  firmware (`user_STM32.c`, node 127, 2500 ms — pump numbers). Correction:
+  the gateway's `heartbeat_consumer: true` makes the *master* watch the
+  slave; nothing writes the slave's 0x1016, so without this the module kept
+  publishing after the MIK died. On loss the stack sends 0x8130 and forces
+  PRE-OP; the app **only logs** (no FAULT — FAULT would latch until a CW
+  reset after the master returns; a lost master is a comm event, not a
+  sensor fault). The redundant `MCO_HandleNMTRequest(PREOP)` in the callback
+  is removed (stack does it). New event `MCO_EVENT_HEARTBEAT_RESTORED` from
+  `MCOUSER_EMCY(ev_clr, 0x8130)` clears the stack's latched 0x1001 bit 0 when
+  the app has nothing to report. Resume = plain NMT start. Playbook §L.
 - **Cutover is coupled (2026-09-22).** The gateway's master image checks
   1018:03 at slave boot (`gen-network.py` disables only the serial check), so
   the new firmware and the new gateway EDS/image must land in the same window.
