@@ -1,9 +1,10 @@
 /**************************************************************************
  MODULE:    VALVE_CONTROL
  CONTAINS:  CiA 408 valve state machine — types, constants, and API
- Manages DISABLED ↔ IDLE ↔ OPENING/CLOSING ↔ FAULT states.
+ Manages DISABLED ↔ IDLE ↔ OPENING/CLOSING (↔ FAULT) states.
  Processes ControlWord (RPDO1), updates StatusWord + ValveState
- (TPDO1) and ErrorRegister (TPDO2) in the process image.
+ (TPDO1) and ErrorRegister (TPDO2 + SDO) in the process image.
+ Fail-safe is hard-wired CLOSED (relay OFF) — see ValveControl_ForceClosed().
  ***************************************************************************/
 
 #ifndef _VALVE_CONTROL_H
@@ -20,7 +21,9 @@ typedef enum {
 	VALVE_STATE_IDLE = 1, /* At known position, ready for commands */
 	VALVE_STATE_OPENING = 2, /* Relay ON, moving toward open */
 	VALVE_STATE_CLOSING = 3, /* Relay OFF, moving toward closed */
-	VALVE_STATE_FAULT = 4 /* Error condition, fail-safe applied */
+	VALVE_STATE_FAULT = 4 /* Contract placeholder: no code path enters it today
+	                         (no feedback sensor). SW bit 3 / CW bit 7 kept so
+	                         the wire contract is stable. */
 } ValveState_FSM_t;
 
 /**************************************************************************
@@ -37,7 +40,7 @@ typedef enum {
 #define CW_OPEN             (1U << 0)   /* Bit 0: Open command (rising edge) */
 #define CW_CLOSE            (1U << 1)   /* Bit 1: Close command (rising edge) */
 #define CW_ENABLE_OP        (1U << 3)   /* Bit 3: Enable operation (level) */
-#define CW_FAULT_RESET      (1U << 7)   /* Bit 7: Fault reset (rising edge) */
+#define CW_FAULT_RESET      (1U << 7)   /* Bit 7: Fault / error reset (rising edge) */
 #define CW_HALT             (1U << 8)   /* Bit 8: Halt (rising edge) */
 
 /**************************************************************************
@@ -51,20 +54,13 @@ typedef enum {
 #define SW_TARGET_REACHED    (1U << 10)  /* Bit 10: Reached commanded position */
 
 /**************************************************************************
- DEFINES: FailSafePosition values [0x2100]
- ***************************************************************************/
-#define FAILSAFE_AS_IS       0
-#define FAILSAFE_OPEN        1
-#define FAILSAFE_CLOSED      2
-
-/**************************************************************************
  GLOBAL FUNCTIONS
  ***************************************************************************/
 
 /**
  * @brief  Initialize valve control state machine
  *         Registers for MCO events, sets initial state to DISABLED,
- *         applies fail-safe on boot if watchdog reset detected.
+ *         relay OFF (closed).
  */
 void ValveControl_Init(void);
 
@@ -75,13 +71,21 @@ void ValveControl_Init(void);
 void ValveControl_Process(void);
 
 /**
- * @brief  Apply fail-safe position based on OD 0x2100
- *         Called on heartbeat loss, NMT non-Operational, IWDG reset
+ * @brief  Fail-safe: drive the relay OFF (valve CLOSED) and forget any
+ *         buffered Open command, so the valve never re-opens by itself.
+ * @param  reason  Short text for the RTT log (e.g. "master heartbeat lost")
+ * @note   Idempotent — safe to call repeatedly (events repeat). Called from
+ *         the heartbeat-lost event (synchronously, inside the stack callback),
+ *         the NMT gate on any exit from Operational, and the stack
+ *         fatal-error event (fatal class only). Boot and IWDG-reset are
+ *         covered by MX_GPIO_Init/ValveDriver_Init driving the relay LOW.
+ *         Re-opening afterwards needs NMT Operational AND a fresh 0→1 edge on
+ *         ControlWord bit 0 (with bit 3 set).
  */
-void ValveControl_ApplyFailSafe(void);
+void ValveControl_ForceClosed(const char *reason);
 
 /**
- * @brief  1 Hz diagnostic output via UART
+ * @brief  1 Hz diagnostic output via RTT
  *         Call from main loop; internally rate-limits to 1 Hz
  */
 void ValveControl_RunDiagnostics(void);

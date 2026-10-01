@@ -24,6 +24,7 @@
   ],
   "buildPresets": [
     { "name": "default", "configurePreset": "default" },
+    { "name": "valve-n08",  "configurePreset": "default", "targets": ["valve-n08"] },
     { "name": "valve-n09",  "configurePreset": "default", "targets": ["valve-n09"] },
     { "name": "pump-n01",   "configurePreset": "default", "targets": ["pump-n01"] },
     { "name": "pump-n02",   "configurePreset": "default", "targets": ["pump-n02"] },

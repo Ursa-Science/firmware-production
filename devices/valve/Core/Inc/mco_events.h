@@ -16,9 +16,10 @@
  ***************************************************************************/
 typedef enum {
 	MCO_EVENT_NMT_CHANGE = 0,    // NMT state changed
-	MCO_EVENT_HEARTBEAT_LOST,    // Consumer heartbeat lost
-	MCO_EVENT_FATAL_ERROR,       // Fatal error occurred
+	MCO_EVENT_HEARTBEAT_LOST,    // Consumer heartbeat lost (MCOUSER_HeartbeatLost)
+	MCO_EVENT_FATAL_ERROR,       // Stack error, fatal or warning class (MCOUSER_FatalError)
 	MCO_EVENT_COMM_RESET,        // Communication reset completed
+	MCO_EVENT_HEARTBEAT_RESTORED,// Consumer node back (MCOUSER_EMCY ev_clr, 0x8130)
 	MCO_EVENT_COUNT              // Number of event types
 } MCO_EventType_t;
 
@@ -29,7 +30,7 @@ typedef struct {
 	MCO_EventType_t type;
 	union {
 		uint8_t nmt_state;      // For MCO_EVENT_NMT_CHANGE
-		uint8_t node_id;        // For MCO_EVENT_HEARTBEAT_LOST
+		uint8_t node_id;        // For MCO_EVENT_HEARTBEAT_LOST / _RESTORED
 		uint16_t error_code;     // For MCO_EVENT_FATAL_ERROR
 		uint8_t init_result;    // For MCO_EVENT_COMM_RESET
 	};

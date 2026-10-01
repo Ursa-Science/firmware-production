@@ -5,51 +5,75 @@ Not a tutorial and not the running log — that is `BUILD_NOTES.md`, which holds
 detailed findings, gotchas, and history. Read this first, then BUILD_NOTES.md for
 depth. Keep this file terse and current; prune stale lines rather than appending.
 
-Last updated: 2026-09-22. Pump dose-strip refactor COMPLETE + HW-validated
-(step-counter OD; ~400-line dose engine removed; Q3 heartbeat-lost runaway
-backstop done). Pump runs at node 1 (master/MIK on a HIGH node ID → old node-1
-HB collision moot).
+Last updated: 2026-09-30 (end of day). **main == origin/main == 7f15268**;
+branch build/node-id-parameter fast-forward merged and pushed (can be deleted).
 
-**PHTEMP 2026-09-30:** fw 4.0.0 committed (3f3c7e1). **Gateway cutover DONE +
-validated on the reference machine (calibration works).** Commissioning two
-field units at **node 31 + 32, 250k**: `add_ursa_device(phtemp NODE_IDS 4 31
-32)` + presets; images validated (differ from n04 by 3 bytes). **Logging
-moved to SEGGER RTT/SWD like the pump** (log.c backend swap, USART2 idle,
-Error_Handler via RTT; +76 B text, bss 4884→8132 for the 4 K up-buffer).
-View: `probe-rs attach --chip STM32G431KBTx build/phtemp-n31-250k.elf`.
-Bench script for the two units: `docs/PHTEMP_BENCH_TEST.md` (CANopen
-Magic frames + expected replies, incl. fault/EMCY cases). Gateway still needs
-`-n31`/`-n32` EDS+DCF pairs. **Node 31 BENCH-VALIDATED 2026-09-30** (trace
-cantrace-testing-pHtemp-refactor.csv): identity/rev 0x00020000, TPDOs,
-temp-unplug EMCY byte-exact, RTT works. Found + FIXED: TPDO1 sent twice per
-sample (stale then new, 50 ms apart) — `CheckDeltaTrigger` ran before
-`UpdateProcessImage` and `MCO_TriggerTPDO` snapshots the PI. Learned: **the
-MCO stack does change-of-state TX on any TPDO with inhibit ≠ 0**, so 0x2400
-never reduced traffic → **DECIDED: delete 0x2400-0x2402.** Firmware side
-DONE (CheckDeltaTrigger + getters gone, no MCO_TriggerTPDO; builds against
-current AND regenerated OD). OD side = **Architect regen #2 DONE 2026-09-30 12:26** (edit list
-`docs/PHTEMP_ARCHITECT_REGEN_2_THRESHOLDS.md`): 0x2400-0x2402 gone AND the
-optional dead comm objects 0x1002/1006/1007/1010/1011/1012/1013/1019/1020
-gone (0x1028 kept, 0x1016/0x1017 kept); RevisionNumber 0x00020000 now genuine
-tool output (.cax synced, hand-edit markers gone); PIMGEND 0x68→0x47; TPDO
-init args unchanged; NODEID_DCF still 0x04. Builds clean, text 40932 B.
-Files carry the canonical `PH-TempModule-n04-250kbs` name (a first export
-came out named n31 with NodeID still 4 — re-exported 12:38; the gateway
-resolves node ID from the DCF NodeID first, so never ship an "nNN" pair whose
-DCF says another node). Images for n04/n31/n32 built + validated 12:40.
-**Master-HB consumer added 2026-09-30** (user_STM32.c: node 127, 2500 ms,
-pump numbers; the gateway does NOT write slave 0x1016 — its
-`heartbeat_consumer` means master-watches-slave). Loss → stack EMCY 0x8130 +
-PRE-OP, app logs only (NO FAULT), recovery event clears stack ER bit 0;
-resume = NMT start. Node 5 target added (n04/n05/n31/n32). Remaining for
-phtemp: commit → gateway EDS re-copy + drop `2400:0` override → re-flash →
-bench: SDO 0x2400 aborts, TPDO1 cadence unchanged, playbook §L heartbeat. Cadence knob is now the
-standard 0x1800:03 inhibit (stack `MCO_ApplyPDOparam` accepts SDO writes).
-FE guide §4.5 + playbook E/F updated accordingly.
-Playbook corrected: serial = 0x12345678 (MCOUSER_GetSerial callback, the
-per-unit hook), unknown-object abort = 0x08000000 (stack). Not yet tested:
-fault reset, FAULT, boot-with-probe-absent, node 32, both units. Uncommitted:
-node IDs, RTT switch, trigger-order fix, docs.
+**VALVE MODULE REFACTOR — Phases 1–2 CODED 2026-09-30, UNCOMMITTED, NOT
+FLASHED, NOT BENCH-VALIDATED.** Plan `docs/VALVE_REFACTOR_PLAN.md` (reviewed
+same day: D3 rewritten — FAULT is contract-only, stack warnings 0x48xx are
+log-only, fatal ≥0x8000 closes then resets; new D9 = a master SDO write to
+0x1016 would disarm the firmware-armed HB consumer, Phase 0 must trace what
+the gateway writes at node-9 boot; EDS 28→**21** objects). Architect edit
+list `docs/VALVE_ARCHITECT_REGEN.md` (Windows step, Phase 3, not done).
+Coded (devices/valve only, builds clean, pump/phtemp sizes unchanged):
+RTT logging (SEGGER files + log.c from phtemp, USART2 IRQ never enabled),
+`FIRMWARE_VERSION "3.0.0"` banner, master-HB consumer (127, 2500 ms) armed
+after the TPDO2 re-assert, `ValveControl_ForceClosed()` replaces
+ApplyFailSafe (relay OFF + position CLOSED + PI CW zeroed + edge detector
+reset) on HB loss / any NMT exit / fatal stack error, DISABLED→IDLE snapshots
+the CW level (resume-reopen bug fix), 0x1001 both homes edge-wise,
+HEARTBEAT_RESTORED clears stack bit 0, CW bit 7 reset works in every state
++ EMCY 0x0000, 0x2222 demo SDO gone, 0x2100/0x2101/0x2300 accessors + the
+unreachable motion-timeout fault branch gone. **Node 8 added as a second
+valve target 2026-10-01** (`add_ursa_device(valve NODE_IDS 8 9)`, preset
+`valve-n08`): images build/valve-n{08,09}-250k.bin (text 34524, bss 8004
+incl. 4 K RTT), n08 vs n09 differ in 7 node-ID-derived bytes. Gateway will
+need a node-8 EDS/DCF pair (DCF NodeID edited) like phtemp 5/31/32. Bench
+playbook (CANopen Magic frames, nodes 8/9, sections A–N):
+**docs/VALVE_BENCH_TEST.md**. **Node 9 FLASHED + bench-tested 2026-10-01
+(CANopen Magic only, no gateway):** TPDO2 DLC 1, open/close 49–50 ms, HB loss
+→ 0x8130 at 2499.8 ms + TPDOs stop, recovery EMCY 0x0000, NMT start after
+loss stays CLOSED (resume-reopen bug fixed), fresh Open works, all NMT exits
+close. Traces `cantrace-testing-valve-{baseline,phase1_2_testing}.csv` on the
+T5. Still owed: every SDO read (identity, 0x6042/0x6040/0x1001 after loss,
+0x1003), reset F, 0x6100 provocation K, node 8, two-valve N, and the
+**gateway-as-master trace for D9 (0x1016 write?)**. Observation: power-cycling
+the valve holds the bus in error frames for ~1 s. NEXT: finish the SDO rows,
+commit Phases 1–2, Architect regen (docs/VALVE_ARCHITECT_REGEN.md).
+Start from: `devices/valve/`, the pump + phtemp precedents (dumb-module
+pattern: MIK owns config/science, module speaks native units; 0x1001 to BOTH
+homes; cause-coded EMCYs; master-HB consumer; RTT logging; no app-level TPDO
+triggers — the stack's COS scan sends any PI change). Known valve items:
+still on the USART2 ring-buffer log (last device); carries the EmSA 0x2222
+demo SDO handler; gateway overrides record a 0x1001 TPDO/SDO disagreement
+(the dual-source bug — same fix as pump/phtemp); TPDO2 empty/DLC=0 fix
+applied 2026-08 but never flashed (see memory + BUILD_NOTES); RevisionNumber
+still 0x00010001; valve EDS file names contain spaces.
+
+**PHTEMP — DONE + HW-VALIDATED 2026-09-30, fw 4.0.0, OD rev 0x00020000.**
+Dumb module: 0x6003 = mV×10, 0x6010 = °C×10, health; MIK owns pH/cal.
+Highlights (details in docs/PHTEMP_REFACTOR_PLAN.md + BUILD_NOTES.md):
+- OD regen #1 (cal objects gone, TPDO1 4 B) + regen #2 (0x2400-0x2402 delta
+  thresholds + dead comm objects gone; the MCO stack sends every PI change
+  itself, so app thresholds were inert). Cadence knob = 0x1800:03 inhibit.
+- 0x1001 written to BOTH homes; EMCY 0x5000 (sensor), 0xFF00 (FAULT),
+  0x0000 (reset); absent-probe reporting + re-init on CW 0x80; warm-up latch.
+- Master-HB consumer (node 127, 2500 ms): loss → stack 0x8130 + PRE-OP, NO
+  FAULT; recovery clears stack ER bit 0; resume = NMT start. **HB loss +
+  recovery bench-tested on nodes 4 and 5, 2026-09-30.**
+- Logging = SEGGER RTT/SWD (`probe-rs attach --chip STM32G431KBTx
+  build/phtemp-nNN-250k.elf`). Node IDs 4/5/31/32 are build targets.
+- Bench playbook (CANopen Magic frames, 4 nodes): docs/PHTEMP_BENCH_TEST.md.
+  Traces on Samsung T5 `cantrace-testing-pHtemp-refactor{,2}.csv`.
+- Gateway: cutover to fw 4.0.0 done on the reference machine (calibration
+  works); FE guide docs/PHTEMP_FE_CUTOVER_GUIDE.md. Still owed by the FE:
+  re-copy the regen-#2 EDS/DCF, drop the `2400:0` override, per-node EDS+DCF
+  pairs for 5/31/32 (DCF NodeID edited — gateway trusts DCF NodeID first).
+- Gotchas learned (all in BUILD_NOTES): MCO_TriggerTPDO snapshots the PI at
+  call time; serial on the bus comes from MCOUSER_GetSerial (0x12345678),
+  not the OD; unknown-object SDO abort is 0x08000000; Architect device
+  rename renames output files without changing DCF NodeID — keep the
+  canonical `-n04-` name; `.cax` = Modules-base.cax and is in sync.
 
 **PHTEMP DUMB-MODULE REFACTOR (2026-09-22, committed 3f3c7e1 on
 build/node-id-parameter):** OD regenerated (11 cal objects gone, TPDO1 6→4 B
@@ -111,10 +135,9 @@ doses at correct 1/8 (pin-implied); SpreadCycle + current UNVERIFIED. Next step:
 remove module + re-measure PDN idle. Full writeup + test plan:
 docs/PUMP_TMC2209_RX_DEAD_DEBUG_TICKET.md.
 
-Branch build/node-id-parameter HEAD = 3f3c7e1 + uncommitted (main = 4f34e36 +
-docs). Pump image = build/pump-n01-250k.bin (FW 2.0.0). Phtemp images =
-build/phtemp-n{04,31,32}-250k.bin (FW 4.0.0 + RTT logging, 2026-09-30, NOT
-yet flashed/bench-validated).
+main = origin/main = 7f15268 (2026-09-30). Pump image = build/pump-n01-250k.bin
+(FW 2.0.0). Phtemp images = build/phtemp-n{04,05,31,32}-250k.bin (FW 4.0.0,
+OD rev 2, RTT, HB consumer — flashed + validated on 4/5/31).
 
 ---
 
@@ -141,7 +164,7 @@ HAL. CAN slaves on a 250 kbit/s bus.
 |---|---|---|---|
 | valve  | yes | 1.2.6 | **VALIDATED** 2026-07-29 — UART + full CAN (NMT start, RPDO open/close, TPDO interval). Flashed via st-flash 1.8.0 / ST-LINK V3. |
 | pump   | yes | 1.2.6 (was 1.2.5) | **VALIDATED** 2026-08-07 (Firmware 2.0.0, Nema-17): CAN (2026-08-05: NMT, PDO run@10ml/min, quick stop, step rate) + TMC2209 UART CONFIG VERIFIED BY CHIP + PA5/DIAG refactor + RTT logging, all on good board via RTT observation. |
-| phtemp | yes | 1.2.6 | **VALIDATED** 2026-08-24 on the Step-1 cal-strip build (mV+temp live, old OD). **Dumb-module OD + FW 4.0.0 (2026-09-22) NOT yet flashed** — needs the coupled gateway cutover first. Temp probe DQ→PA6 (2026-07-29). |
+| phtemp | yes | 1.2.6 | **VALIDATED 2026-09-30, fw 4.0.0 / OD rev 0x00020000** — identity, TPDOs (4 B), pH 4/7/10 levels, temp-unplug EMCY byte-exact, 0x1001 both homes, RTT logging, master-HB loss + recovery (nodes 4 + 5). Temp probe DQ→PA6 (2026-07-29). |
 
 Migration is PROVEN on hardware for ALL THREE devices. CMake+14.3.1 build is
 functionally equivalent to the CubeIDE build on real devices.

@@ -1,13 +1,19 @@
 /**
  ******************************************************************************
  * @file    log.h
- * @brief   Non-blocking ring-buffer logging with subsystem debug control
- * @note    All DBG_* macros route through Log_Write(), which enqueues
- *          formatted text into a 1 KB ring buffer.  The USART2 TXE ISR
- *          drains the buffer one byte per interrupt, giving zero-blocking
- *          behaviour.
+ * @brief   Non-blocking logging over SEGGER RTT with subsystem debug control
+ * @note    All DBG_* macros route through Log_Write(), which formats into a
+ *          stack buffer and writes it to SEGGER RTT channel 0 (a RAM buffer
+ *          drained by the debug probe over SWD).  Same backend as the pump
+ *          and phtemp; the old USART2 TXE ring buffer is gone (the valve was
+ *          the last device on it, retired 2026-09-30).
+ *          Call Log_Init(&huart2) once at boot (huart kept for API compat,
+ *          unused).  Log_TxISR() is a legacy no-op retained for
+ *          stm32g4xx_it.c.
  *
- *          Adapted from the proven pH-Temperature module implementation.
+ *          View: probe-rs attach --chip STM32G431KBTx build/valve-n09-250k.elf
+ *          The IWDG (2048 ms) keeps running under a non-halting attach; never
+ *          halt the core from the viewer.
  ******************************************************************************
  */
 
@@ -23,12 +29,8 @@ extern "C" {
 #include "stm32g4xx_hal.h"
 
 /*============================================================================*/
-/*                         RING BUFFER CONFIGURATION                          */
+/*                        FORMAT BUFFER CONFIGURATION                         */
 /*============================================================================*/
-
-/** Ring buffer size — must be power of 2 */
-#define LOG_RING_SIZE       1024u
-#define LOG_RING_MASK       (LOG_RING_SIZE - 1u)
 
 /** Max formatted message length (stack-allocated per Log_Write call) */
 #define LOG_FMT_BUF_SIZE    128u
@@ -64,8 +66,8 @@ extern "C" {
 /** Valve state machine transitions, relay control, motion timing */
 #define DBG_VALVE_ENABLE        1
 
-/** Fail-safe triggers, heartbeat loss, watchdog recovery */
-#define DBG_FAILSAFE_ENABLE     0
+/** Fail-safe close: heartbeat loss, NMT exit, stack error, watchdog recovery */
+#define DBG_FAILSAFE_ENABLE     1
 
 /** CAN/MCO stack events — NMT changes, heartbeat, RPDO/TPDO */
 #define DBG_CAN_ENABLE          1
@@ -92,10 +94,10 @@ typedef enum {
 /*============================================================================*/
 
 /**
- * @brief  Initialize logging — stores UART handle, resets ring buffer
- * @param  huart  Pointer to USART2 handle (debug UART)
- * @note   Call AFTER MX_USART2_UART_Init() and BEFORE any log output.
- *         The caller must also enable USART2 global interrupt in NVIC.
+ * @brief  Initialize logging — initialises the RTT control block
+ * @param  huart  Unused (kept for API compatibility with the UART backend)
+ * @note   Log_PutChar/Log_Write are safe before this call: RTT
+ *         self-initialises on first write.
  */
 void Log_Init(UART_HandleTypeDef *huart);
 
@@ -106,14 +108,14 @@ void Log_Init(UART_HandleTypeDef *huart);
 uint8_t Log_IsReady(void);
 
 /**
- * @brief  Enqueue a single character into the ring buffer
- * @param  ch  Character to enqueue
- * @note   Non-blocking — drops character if buffer full
+ * @brief  Write a single character to RTT channel 0
+ * @param  ch  Character to write
+ * @note   Non-blocking — drops the character if the RTT buffer is full
  */
 void Log_PutChar(uint8_t ch);
 
 /**
- * @brief  Formatted log output — enqueues into ring buffer (non-blocking)
+ * @brief  Formatted log output to RTT channel 0 (non-blocking)
  * @param  lvl  Log level (for filtering)
  * @param  sys  Subsystem identifier
  * @param  fmt  printf-style format string
@@ -123,8 +125,9 @@ void Log_PutChar(uint8_t ch);
 void Log_Write(Log_Level_t lvl, Log_Subsystem_t sys, const char *fmt, ...);
 
 /**
- * @brief  USART2 TXE ISR entry point — drains ring buffer one byte per call
- * @note   Call this from USART2_IRQHandler() in stm32g4xx_it.c
+ * @brief  Legacy no-op — RTT needs no TX interrupt
+ * @note   Still referenced by USART2_IRQHandler() in stm32g4xx_it.c so the
+ *         vector links; the USART2 IRQ is never enabled.
  */
 void Log_TxISR(void);
 

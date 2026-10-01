@@ -28,6 +28,7 @@
 #include "valve_driver.h"
 #include "led_control.h"
 #include "procimg_api.h"
+#include "SEGGER_RTT.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -37,7 +38,10 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+/* Banner only; the OD revision (0x1018:03) is the wire-level contract.
+ * 3.0.0 = dumb-module refactor: RTT logging, master-HB consumer, fail-safe
+ * hard-wired CLOSED, both-homes 0x1001, EMCY (VALVE_REFACTOR_PLAN.md). */
+#define FIRMWARE_VERSION "3.0.0"
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -131,25 +135,27 @@ int main(void)
   MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
 
-	/* --- Watchdog reset detection (CiA 304) --- */
-	if (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST)) {
-		/* Apply fail-safe position BEFORE stack init */
+	/* --- Watchdog reset detection (CiA 304) ---
+	 * Fail-safe is hard-wired CLOSED (relay OFF): MX_GPIO_Init already drove
+	 * the relay pin LOW, ValveDriver_Init re-asserts it before the stack comes
+	 * up, and ValveControl_Init reports the position as CLOSED. Nothing is
+	 * read from the OD any more (0x2100 FailSafePosition is gone). */
+	uint8_t iwdg_reset = (__HAL_RCC_GET_FLAG(RCC_FLAG_IWDGRST) != 0u);
+	if (iwdg_reset) {
 		ValveDriver_Init();
-		ValveControl_ApplyFailSafe();
 	}
 	__HAL_RCC_CLEAR_RESET_FLAGS();
 
-	/* --- Enable USART2 interrupt for non-blocking log drain ---
-	 * Done here (not in HAL_UART_MspInit) so it runs AFTER the peripheral
-	 * is fully configured and we control the exact priority.
-	 * Priority 3 keeps it below FDCAN (0) and TIM7 (0) ISRs. */
-	HAL_NVIC_SetPriority(USART2_IRQn, 3, 0);
-	HAL_NVIC_EnableIRQ(USART2_IRQn);
-
-	/* --- Initialize logging (USART2 ring-buffer) --- */
+	/* --- Initialize logging: SEGGER RTT over SWD (same as pump + phtemp).
+	 * USART2 is initialised by CubeMX but no longer used for logging: its
+	 * IRQ is never enabled and Log_TxISR() is a no-op. --- */
 	Log_Init(&huart2);
-	printf("\r\n=== Valve Module v1.0 ===\r\n");
+	printf("\r\n=== Valve Module (CiA 408) ===\r\n");
+	printf("Firmware: %s\r\n", FIRMWARE_VERSION);
 	printf("Node ID: 0x%02X, Bitrate: %u kbit/s\r\n", NODEID, CAN_BITRATE);
+	if (iwdg_reset) {
+		printf("*** IWDG RESET DETECTED - previous main loop stall; valve held CLOSED ***\r\n");
+	}
 
 	/* --- Initialize MCO event system --- */
 	MCO_Events_Init();
@@ -195,7 +201,7 @@ int main(void)
 		/* --- LED control (reads OD 0x2000 + valve state) --- */
 		LEDControl_Process();
 
-		/* --- Diagnostics (1 Hz UART output) --- */
+		/* --- Diagnostics (1 Hz RTT output) --- */
 		ValveControl_RunDiagnostics();
 
 		/* --- CiA 304 watchdog kick --- */
@@ -664,30 +670,20 @@ void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
 	/*
-	 * Blocking diagnostic output — adapted from pH-Temp module.
-	 * Interrupts are disabled so the ring-buffer ISR will not run.
-	 * Instead we bit-bang each character directly into the USART TDR
-	 * and spin-wait for TXE, guaranteeing the message reaches the
-	 * serial terminal even if everything else is broken.
+	 * Diagnostic output + Fault LED blink before halting. This function may
+	 * be called very early (before Log_Init / LEDControl_Init), so we use only
+	 * RTT and direct GPIO — no PWM, no UART. RTT self-initialises on first
+	 * write, and the message stays readable in the RAM buffer after the halt
+	 * (probe-rs / RTT viewer, or GDB symbol _SEGGER_RTT).
 	 *
-	 * After the message we blink the Fault LED (TIM4_CH1 / PB6)
-	 * in an infinite loop so the error is visible on the board.
+	 * The relay pin is left as it is: on a genuine early-boot failure it is
+	 * still LOW from MX_GPIO_Init (valve closed), and forcing it here would
+	 * touch a GPIO whose clock may not be enabled yet.
 	 */
+	SEGGER_RTT_WriteString(0,
+			"\r\n[FATAL] Error_Handler() entered - system halted\r\n");
+
   __disable_irq();
-
-	/* --- Blocking UART output (polled) --- */
-	static const char msg[] = "\r\n!!! Error_Handler() entered !!!\r\n";
-
-	USART_TypeDef *uart = USART2;
-	for (int i = 0; msg[i] != '\0'; i++) {
-		/* Wait for TXE (Transmit Data Register Empty) */
-		while (!(uart->ISR & USART_ISR_TXE_TXFNF)) { /* spin */
-		}
-		uart->TDR = (uint8_t) msg[i];
-	}
-	/* Wait for TC (Transmission Complete) so last byte is fully sent */
-	while (!(uart->ISR & USART_ISR_TC)) { /* spin */
-	}
 
 	/* --- Blink Fault LED forever (PB6 / TIM4_CH1) ---
 	 * Since PWM timer interrupts are dead, toggle the GPIO directly. */

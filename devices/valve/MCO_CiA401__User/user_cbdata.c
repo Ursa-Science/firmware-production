@@ -17,6 +17,7 @@ VERSION:   7.17, EmSA 04-MAR-24
 ***************************************************************************/
 
 #include "mcop_inc.h"
+#include "mco_events.h"
 
 
 #ifdef MCOUSER_MINMAX
@@ -151,6 +152,17 @@ uint8_t MCOUSER_EMCY (
 #endif // USE_CANOPEN_FD
   )
 {
+  /* The stack calls this with ev_clr set when a previously lost heartbeat
+   * consumer sees the master again. Hand it to valve_control so the stack's
+   * latched ErrorRegister bit 0 can be cleared (the stack sets it on 0x8130
+   * and never clears it itself). Return 0 so the stack still sends its own
+   * recovery EMCY. */
+  if (ev_clr && (emcy_code == EMCY_HB_ERR))
+  {
+    MCO_Event_t ev = { .type = MCO_EVENT_HEARTBEAT_RESTORED, .node_id = em_1 };
+    MCO_Events_Fire(&ev);
+  }
+  (void)em_2; (void)em_3; (void)em_4; (void)em_5;
   return 0;
 }
 #endif // USECB_EMCY
@@ -280,41 +292,17 @@ void MCOUSER_SDOWrAft (
 
 
 
-#if USECB_APPSDO_READ || USECB_APPSDO_WRITE
-#include <string.h>
-char MEM_CONST od_2222_23_rd_buf1[] = "012345678901234567890123456789";
-char MEM_CONST od_2222_23_rd_buf2[] = "Test of custom entry 2222h,23h 0123456789";
-uint8_t od_2222_23_wr_buf[64];
-
-#define RW_BUFSIZE      20              // maximum size for single r/w buffer
-#define FSSIMU_PACKETS  10              // maximum number of packets for the multi-buffer access
-#define FSSIMU_MAXSIZE  (FSSIMU_PACKETS*RW_BUFSIZE) // maximum size for the multi-buffer access
-
-// od_2222_24_rw_buf is the read/write buffer for entry [2222h,24h]. That's the
-// buffer the stack "sees".
-// od_2222_24_fssimu_buf simulates "some data source/sink in the background,"
-// such as a file system. The stack never accesses this buffer directly. Instead,
-// the call-back copies data back and forth in maximum chunks of RW_BUFSIZE.
-// These MEM_CPY calls simulate file read/write.
-uint8_t od_2222_24_rw_buf[RW_BUFSIZE];
-uint8_t od_2222_24_fssimu_buf[FSSIMU_PACKETS][RW_BUFSIZE];
-
-uint16_t bufcnt;
-volatile uint32_t lenw = 0;
-volatile uint32_t lenwc = 0;
-uint8_t zero = 0;
-#endif // USECB_APPSDO_READ || USECB_APPSDO_WRITE
+/* The EmSA demo handler for the phantom object 0x2222:23/24 (segmented /
+ * multi-buffer SDO example with `for(;;)` traps) is deleted: the valve has no
+ * application-specific SDO objects. Every access that is not in the OD table
+ * now returns "not handled" and the stack aborts with 0x08000000. Same as
+ * pump + phtemp. */
 
 #if USECB_APPSDO_READ
 /*******************************************************************************
 DOES:    Call Back function to allow implementation of custom, application
-         specific OD Read entries
-         Here: Alternating between 2 different strings
+         specific OD Read entries. Not used on this device.
 RETURNS: 0x00 - OD entry not handled by this function
-         0x01 - OD entry handled by this function
-         0x05 - Abort with "attempting to read a write-only object"
-         0x06 - Abort with "entry does not exist"
-         0x08 - Abort with "data type doesn't match" (CANopen FD only)
 *******************************************************************************/
 uint8_t MCOUSER_AppSDOReadInit (
   uint8_t sdoserver_client_nid, // CANopen: The SDO server number on which
@@ -329,90 +317,25 @@ uint8_t MCOUSER_AppSDOReadInit (
   uint8_t MEM_FAR *type // RETURN: data type (CANopen FD only)
   )
 {
-  static uint16_t lenr;
-
-  if ((idx == 0x2222) && (subidx == 0x23))
-  { // handle this access, read alternating strings in single-buffer transfer
-    if (lenr != sizeof(od_2222_23_rd_buf1)-1)
-    {
-      lenr = sizeof(od_2222_23_rd_buf1)-1;
-      *size = lenr;
-      *pDat = (uint8_t *)&od_2222_23_rd_buf1[0];
-    }
-    else
-    {
-      lenr = sizeof(od_2222_23_rd_buf2)-1;
-      *size = sizeof(od_2222_23_rd_buf2)-1;
-      *pDat = (uint8_t *)&od_2222_23_rd_buf2[0];
-    }
-  }
-  else if ((idx == 0x2222) && (subidx == 0x24))
-  { // handle this access, multi-buffer transfer
-    *pDat = (uint8_t *)&od_2222_24_rw_buf[0];
-    *totalsize = lenw;
-    // either transmit full r/w buffer length, or partial buffer if data length is smaller
-    *size = (lenw > sizeof(od_2222_24_rw_buf)) ? sizeof(od_2222_24_rw_buf) : lenw;
-    // keep track of how many bytes have been transmitted
-    lenwc = *totalsize - *size;
-    // Simulate file system read by copying from simulation buffer to single r/w buffer
-    bufcnt = 0;
-    MEM_CPY(&od_2222_24_rw_buf[0], &od_2222_24_fssimu_buf[bufcnt][0], sizeof(od_2222_24_rw_buf));
-    bufcnt++;
-  }
-#if defined(USE_CANOPEN_FD) && (USE_CANOPEN_FD==1)
-  else if ((idx == 0x1031) && (subidx == 0x04))
-  { // handle access to Active Error History - Error History Domain, tbd., this default handler always returns 0 bytes
-    *size = 0;
-    *type = TYPE_DOMAIN;
-  }
-#endif
-  else
-  {
-    return 0;
-  }
-
-  return 1;
+  (void)sdoserver_client_nid; (void)idx; (void)subidx;
+  (void)totalsize; (void)size; (void)pDat; (void)type;
+  return 0;
 }
 
 
 /*******************************************************************************
-DOES:    Call Back function to allow implementation of custom, application
-         specific OD Read entries, called at end of transfer with the option
-         to add more data.
+DOES:    Called at end of an application SDO read transfer. Not used.
 RETURNS: Nothing
 *******************************************************************************/
 void MCOUSER_AppSDOReadComplete (
-  uint8_t sdoserver_client_nid, // CANopen: The SDO server number on which
-                                  // the request came in.
-                                  // CANopen FD: The USDO client node ID
-                                  // from which the request came in.
-  uint16_t idx, // Index of OD entry
-  uint8_t subidx, // Subindex of OD entry
+  uint8_t sdoserver_client_nid,
+  uint16_t idx,
+  uint8_t subidx,
   uint32_t MEM_FAR *size // RETURN: size of next block of data, 0 for no further data
   )
 {
-  if ((idx == 0x2222) && (subidx == 0x23))
-  { // handle this access, single-buffer transfer finished
-    *size = 0;
-  }
-  else if ((idx == 0x2222) && (subidx == 0x24))
-  { // handle this access, multi-buffer transfer
-    // either transmit full r/w buffer length, or partial buffer if it's the last one
-    *size = (lenwc > sizeof(od_2222_24_rw_buf)) ? sizeof(od_2222_24_rw_buf) : lenwc;
-    // keep track of how many bytes have been transmitted
-    lenwc -= *size;
-    // Simulate file system read by copying from simulation buffer to single r/w buffer
-    MEM_CPY(&od_2222_24_rw_buf[0], &od_2222_24_fssimu_buf[bufcnt][0], sizeof(od_2222_24_rw_buf));
-    bufcnt++;
-  }
-#if defined(USE_CANOPEN_FD) && (USE_CANOPEN_FD==1)
-  else if ((idx == 0x1031) && (subidx == 0x04))
-  { // handle access to Active Error History - Error History Domain, tbd., this default handler always returns 0 bytes
-    *size = 0;
-  }
-#endif
-
-  return;
+  (void)sdoserver_client_nid; (void)idx; (void)subidx;
+  *size = 0;
 }
 #endif // USECB_APPSDO_READ
 
@@ -420,91 +343,38 @@ void MCOUSER_AppSDOReadComplete (
 #if USECB_APPSDO_WRITE
 /*******************************************************************************
 DOES:    Call Back function to allow implementation of custom, application
-         specific OD Read entries
-         Here: Simply receive data
+         specific OD Write entries. Not used on this device.
 RETURNS: 0x00 - OD entry not handled by this function
-         0x01 - OD entry handled by this function
-         0x04 - Abort with "attempting to write a read-only object"
-         0x06 - Abort with "entry does not exist"
-         0x08 - Abort with "data type doesn't match" (CANopen FD only)
 *******************************************************************************/
 uint8_t MCOUSER_AppSDOWriteInit (
-  uint8_t sdoserver_client_nid, // CANopen: The SDO server number on which
-                                  // the request came in.
-                                  // CANopen FD: The USDO client node ID
-                                  // from which the request came in.
-  uint16_t idx, // Index of OD entry
-  uint8_t subidx, // Subindex of OD entry
-  uint32_t MEM_FAR *totalsize, // RETURN: total maximum size of data, only set if >*size
-  uint32_t MEM_FAR *size, // Data size, if known. RETURN: max size of data buffer
-  uint8_t * MEM_FAR *pDat, // RETURN: pointer to data buffer
-  uint8_t MEM_FAR *type // RETURN: data type (CANopen FD only)
+  uint8_t sdoserver_client_nid,
+  uint16_t idx,
+  uint8_t subidx,
+  uint32_t MEM_FAR *totalsize,
+  uint32_t MEM_FAR *size,
+  uint8_t * MEM_FAR *pDat,
+  uint8_t MEM_FAR *type
   )
 {
-  if ((idx == 0x2222) && (subidx == 0x23))
-  { // handle this access, single-buffer transfer
-    *size = sizeof(od_2222_23_wr_buf);
-    *pDat = (uint8_t *)&od_2222_23_wr_buf[0];
-    return 1;
-  }
-  else if ((idx == 0x2222) && (subidx == 0x24))
-  { // handle this access, multi-buffer transfer
-    *totalsize = sizeof(od_2222_24_fssimu_buf);
-    *size = sizeof(od_2222_24_rw_buf);
-    *pDat = (uint8_t *)&od_2222_24_rw_buf[0];
-    lenwc = 0;
-    bufcnt = 0;
-    return 1;
-  }
+  (void)sdoserver_client_nid; (void)idx; (void)subidx;
+  (void)totalsize; (void)size; (void)pDat; (void)type;
   return 0;
 }
 
 
 /*******************************************************************************
-DOES:    Call Back function to allow implementation of custom, application
-         specific OD Write entries, call at end of transfer of a block. For
-         multiple blocks per transfer, the same buffer is used for all blocks.
+DOES:    Called at end of an application SDO write block. Not used.
 RETURNS: 0x00 - OD entry not handled by this function
-         0x01 - OD entry handled by this function
-         0x04 - Abort with "attempting to write a read-only object"
 *******************************************************************************/
 uint8_t MCOUSER_AppSDOWriteComplete (
-  uint8_t sdoserver_client_nid, // CANopen: The SDO server number on which
-                                  // the request came in.
-                                  // CANopen FD: The USDO client node ID
-                                  // from which the request came in.
-  uint16_t idx, // Index of OD entry
-  uint8_t subidx, // Subindex of OD entry
-  uint32_t size, // Number of bytes written (of last block)
-  uint32_t more // number of bytes still to come (of total transfer)
+  uint8_t sdoserver_client_nid,
+  uint16_t idx,
+  uint8_t subidx,
+  uint32_t size,
+  uint32_t more
   )
 {
-  if ((idx == 0x2222) && (subidx == 0x23))
-  { // handle this access, all should be done because of single-buffer transfer
-    // Here enter code to retrieve data from buffer
-    // Data length: size, more == 0
-    if (more != 0)
-    { // this should never happen
-      for (;;); // wait here for break
-    }
-
-    return 0x01;
-  }
-  else if ((idx == 0x2222) && (subidx == 0x24))
-  { // handle this access, multi-buffer transfer
-    // simulate file system write by storing data from the single r/w buffer into the simulation buffer array
-    MEM_CPY(&(od_2222_24_fssimu_buf[bufcnt][0]), &(od_2222_24_rw_buf[0]), size);
-    bufcnt++;
-    // keep track of how many bytes have been transferred
-    lenwc += size;
-    if (more == 0)
-    { // this is the last transfer, all received
-      lenw = lenwc; // save new length of the entry, for read access
-    }
-
-    return 0x01;
-  }
-
+  (void)sdoserver_client_nid; (void)idx; (void)subidx; (void)size; (void)more;
   return 0x00;
 }
 #endif // USECB_APPSDO_WRITE

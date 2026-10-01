@@ -2,13 +2,19 @@
  MODULE:    VALVE_CONTROL
  CONTAINS:  CiA 408 valve state machine implementation
  Processes ControlWord via RPDO1, drives relay via valve_driver,
- updates StatusWord + ValveState (TPDO1) and ErrorRegister (TPDO2)
+ updates StatusWord + ValveState (TPDO1) and ErrorRegister (TPDO2 + SDO)
  in the MCO process image.
 
- State machine: DISABLED ↔ IDLE ↔ OPENING/CLOSING ↔ FAULT
+ State machine: DISABLED ↔ IDLE ↔ OPENING/CLOSING (↔ FAULT, unused)
  NMT-gated: must be NMT Operational for valve to respond.
  Edge detection on ControlWord bits (same pattern as pump module).
  Time-based motion model (no position sensor).
+
+ Fail-safe policy (VALVE_REFACTOR_PLAN.md D1/D2, 2026-09-30): the valve is
+ CLOSED (relay OFF) whenever the master heartbeat is lost, whenever the
+ node leaves NMT Operational for any reason, on a fatal stack error, and at
+ boot/IWDG reset. It never re-opens by itself: after any of those the
+ master must send NMT start AND a fresh ControlWord Open edge.
 
  COPYRIGHT: Ursa Science 2026
  ***************************************************************************/
@@ -26,11 +32,16 @@
  ***************************************************************************/
 /* Clippard EV-2M-24 solenoid valve: response time 5-10 ms nominal (datasheet)
  * — it snaps to position, there is no mechanical travel to wait out. With no
- * position sensor we declare the commanded position reached after a short fixed
- * settle (generous margin over the 10 ms response plus relay/loop jitter),
- * rather than waiting the multi-second MotionTimeout. MotionTimeout (0x2300) is
- * retained only as the stuck-valve fault sanity bound, not for normal timing. */
+ * position sensor we declare the commanded position reached after a short
+ * fixed settle (generous margin over the 10 ms response plus relay/loop
+ * jitter). There is no stuck-valve detection: nothing on this module can
+ * observe it (the former 0x2300 MotionTimeout fault bound was unreachable
+ * behind this settle and was deleted). */
 #define VALVE_MOTION_SETTLE_MS 50u
+
+/* ErrorRegister (0x1001) bits — CiA 301 */
+#define ERREG_GENERIC          0x01u /* bit 0: generic error (also set by the stack on any EMCY it pushes) */
+#define ERREG_APP_BITS         (ERREG_GENERIC) /* bits this module owns */
 
 /**************************************************************************
  LOCAL VARIABLES
@@ -40,9 +51,9 @@ static uint8_t valve_position; /* Current position (VALVE_POS_*) */
 static uint16_t last_control_word; /* Previous CW for edge detection */
 static uint32_t motion_start_ms; /* HAL_GetTick() when motion began */
 static uint16_t status_word; /* Current StatusWord shadow */
-static uint8_t error_register; /* Current ErrorRegister shadow */
+static uint8_t last_err_reg; /* App-owned 0x1001 bits last applied to both homes */
 static uint32_t diag_last_ms; /* Last diagnostics print timestamp */
-static bool fault_active; /* Fault flag */
+static bool fault_active; /* Fault latch (never set today — see VALVE_STATE_FAULT) */
 
 /**************************************************************************
  LOCAL FUNCTION PROTOTYPES
@@ -50,10 +61,14 @@ static bool fault_active; /* Fault flag */
 static void ValveControl_ProcessControlWord(void);
 static void ValveControl_TickMotion(void);
 static uint16_t ValveControl_GenerateStatusWord(void);
+static void ValveControl_UpdateErrorRegister(void);
+static void ValveControl_ClearErrors(void);
 static void ValveControl_UpdateProcessImage(void);
 static void ValveControl_SetState(ValveState_FSM_t new_state);
 static void ValveControl_OnNMTChange(const MCO_Event_t *event);
 static void ValveControl_OnHeartbeatLost(const MCO_Event_t *event);
+static void ValveControl_OnHeartbeatRestored(const MCO_Event_t *event);
+static void ValveControl_OnFatalError(const MCO_Event_t *event);
 
 /**************************************************************************
  GLOBAL FUNCTIONS
@@ -61,39 +76,40 @@ static void ValveControl_OnHeartbeatLost(const MCO_Event_t *event);
 
 void ValveControl_Init(void) {
 	fsm_state = VALVE_STATE_DISABLED;
-	valve_position = VALVE_POS_CLOSED; /* Default per EDS (pimg.h default = 0x01) */
+	valve_position = VALVE_POS_CLOSED; /* Relay is OFF from boot / ValveDriver_Init */
 	last_control_word = 0;
 	motion_start_ms = 0;
 	status_word = 0;
-	error_register = 0;
+	last_err_reg = 0;
 	diag_last_ms = 0;
 	fault_active = false;
 
-	/* Initialize valve driver (relay OFF) */
+	/* Initialize valve driver (relay OFF = closed) */
 	ValveDriver_Init();
 
 	/* Register for MCO events */
 	MCO_Events_Register(MCO_EVENT_NMT_CHANGE, ValveControl_OnNMTChange);
 	MCO_Events_Register(MCO_EVENT_HEARTBEAT_LOST, ValveControl_OnHeartbeatLost);
+	MCO_Events_Register(MCO_EVENT_HEARTBEAT_RESTORED,
+			ValveControl_OnHeartbeatRestored);
+	MCO_Events_Register(MCO_EVENT_FATAL_ERROR, ValveControl_OnFatalError);
 
 	/* Update process image with initial values */
 	ValveControl_UpdateProcessImage();
 
-	DBG_STATE(VALVE, "Init complete, state=DISABLED");
+	DBG_STATE(VALVE, "Init complete, state=DISABLED, relay OFF (closed)");
 }
 
 void ValveControl_Process(void) {
 	/*--------------------------------------------------------------
-	 * NMT Gate: If not Operational, force DISABLED
+	 * NMT Gate: If not Operational, force DISABLED + CLOSED
 	 *--------------------------------------------------------------*/
 	if (MY_NMT_STATE != NMTSTATE_OP) {
 		if (fsm_state != VALVE_STATE_DISABLED) {
 			DBG_STATE(VALVE, "NMT not Operational (0x%02X) -> DISABLED",
 					MY_NMT_STATE);
-
-			ValveControl_ApplyFailSafe();
+			ValveControl_ForceClosed("NMT left Operational");
 			ValveControl_SetState(VALVE_STATE_DISABLED);
-			last_control_word = 0;
 		}
 		ValveControl_UpdateProcessImage();
 		return;
@@ -101,7 +117,16 @@ void ValveControl_Process(void) {
 
 	/* If we just became Operational and were DISABLED, transition to IDLE */
 	if (fsm_state == VALVE_STATE_DISABLED && !fault_active) {
-		DBG_STATE(VALVE, "NMT Operational -> IDLE");
+		/* Re-arm rule: whatever ControlWord level is present at entry counts
+		 * as already seen. RPDO1 only lands in the process image in OP, so a
+		 * stale Open (0x0009) buffered before a heartbeat loss / NMT stop
+		 * must not fire as a rising edge the moment the master restarts us.
+		 * ForceClosed() has normally zeroed the PI copy already; this is the
+		 * belt-and-braces for the case where the master re-sent its shadow
+		 * during the same loop. Opening needs a fresh 0->1 edge on bit 0. */
+		last_control_word = ProcImg_GetControlWord();
+		DBG_STATE(VALVE, "NMT Operational -> IDLE (CW at entry 0x%04X)",
+				last_control_word);
 		ValveControl_SetState(VALVE_STATE_IDLE);
 	}
 
@@ -111,7 +136,7 @@ void ValveControl_Process(void) {
 	ValveControl_ProcessControlWord();
 
 	/*--------------------------------------------------------------
-	 * Tick motion timeout (for OPENING/CLOSING states)
+	 * Tick motion settle (for OPENING/CLOSING states)
 	 *--------------------------------------------------------------*/
 	ValveControl_TickMotion();
 
@@ -121,25 +146,36 @@ void ValveControl_Process(void) {
 	ValveControl_UpdateProcessImage();
 }
 
-void ValveControl_ApplyFailSafe(void) {
-	uint8_t fail_safe = ProcImg_GetFailSafePosition();
+void ValveControl_ForceClosed(const char *reason) {
+	bool relay_was_on = ValveDriver_GetRelayState();
+	uint8_t prev_position = valve_position;
 
-	switch (fail_safe) {
-	case FAILSAFE_OPEN:
-		ValveDriver_SetRelay(true);
-		DBG_STATE(FAILSAFE, "Applied: OPEN (relay ON)");
-		break;
+	/* 1. Physical: relay OFF = valve closed (normally-closed Clippard). */
+	ValveDriver_SetRelay(false);
 
-	case FAILSAFE_CLOSED:
-		ValveDriver_SetRelay(false);
-		DBG_STATE(FAILSAFE, "Applied: CLOSED (relay OFF)");
-		break;
+	/* 2. Reported position follows the relay, so an SDO read of 0x6042 in
+	 *    PRE-OP says CLOSED instead of the stale pre-event value. */
+	valve_position = VALVE_POS_CLOSED;
 
-	case FAILSAFE_AS_IS:
-	default:
-		DBG_STATE(FAILSAFE, "Applied: AS_IS (no change)");
-		break;
+	/* 3. Forget any buffered command: zero the process-image ControlWord
+	 *    (RPDO1 data survives PRE-OP otherwise) and the edge detector, so
+	 *    the next Open needs a fresh 0->1 edge from the master. */
+	ProcImg_SetControlWord(0);
+	last_control_word = 0;
+
+	/* 4. A motion in progress is over (relay is OFF now); an IDLE stays
+	 *    IDLE at the new position. DISABLED/FAULT are left to their owners
+	 *    (NMT gate / fault reset). */
+	if (fsm_state == VALVE_STATE_OPENING || fsm_state == VALVE_STATE_CLOSING) {
+		ValveControl_SetState(VALVE_STATE_IDLE);
 	}
+
+	if (relay_was_on || prev_position != VALVE_POS_CLOSED) {
+		DBG_STATE(FAILSAFE, "Forced CLOSED (%s): relay %s -> OFF, pos %u -> 1",
+				reason, relay_was_on ? "ON" : "OFF", (unsigned) prev_position);
+	}
+
+	ValveControl_UpdateProcessImage();
 }
 
 void ValveControl_RunDiagnostics(void) {
@@ -149,13 +185,6 @@ void ValveControl_RunDiagnostics(void) {
 		return; /* Not yet 1 second since last output */
 	}
 	diag_last_ms = now;
-
-	uint16_t timeout_s = ProcImg_GetMotionTimeout();
-	uint32_t elapsed_s = 0;
-
-	if (fsm_state == VALVE_STATE_OPENING || fsm_state == VALVE_STATE_CLOSING) {
-		elapsed_s = (now - motion_start_ms) / 1000;
-	}
 
 	static const char *const state_names[] = { "DISABLED", "IDLE", "OPENING",
 			"CLOSING", "FAULT" };
@@ -169,10 +198,10 @@ void ValveControl_RunDiagnostics(void) {
 					pos_names[valve_position] : "???";
 
 	DBG_PRINT(VALVE,
-			"State=%s Pos=%s SW=0x%04X Relay=%s MotionTmr=%lu/%us Err=0x%02X",
+			"State=%s Pos=%s SW=0x%04X Relay=%s NMT=0x%02X CW=0x%04X Err=0x%02X",
 			sname, pname, status_word,
-			ValveDriver_GetRelayState() ? "ON" : "OFF", elapsed_s, timeout_s,
-			error_register);
+			ValveDriver_GetRelayState() ? "ON" : "OFF", MY_NMT_STATE,
+			ProcImg_GetControlWord(), gMCOConfig.error_register);
 }
 
 ValveState_FSM_t ValveControl_GetState(void) {
@@ -216,13 +245,17 @@ static void ValveControl_ProcessControlWord(void) {
 	 * Open/Close bits are only inspected when the FSM is IDLE + enabled. */
 	uint16_t inspected = CW_FAULT_RESET | CW_HALT;
 
-	/*--- Fault Reset (bit 7 rising edge) — highest priority ---*/
+	/*--- Fault / error reset (bit 7 rising edge) — highest priority ---
+	 * Works in EVERY state, not only with a latched app fault: it is also
+	 * how the MIK clears a stack-set ErrorRegister bit 0 (EMCY 0x8130 /
+	 * 0x6100 history) without a power cycle. */
 	if (rising & CW_FAULT_RESET) {
+		ValveControl_ClearErrors();
+
 		if (fault_active) {
 			DBG_STATE(VALVE, "Fault Reset -> DISABLED");
 			fault_active = false;
-			error_register = 0;
-			valve_position = VALVE_POS_UNKNOWN;
+			valve_position = ValveDriver_GetRelayState() ? VALVE_POS_OPEN : VALVE_POS_CLOSED;
 			ValveControl_SetState(VALVE_STATE_DISABLED);
 
 			/* If NMT Operational, immediately go to IDLE */
@@ -302,39 +335,17 @@ static void ValveControl_ProcessControlWord(void) {
 }
 
 /**
- * @brief  Tick the motion timeout for OPENING/CLOSING states
- *         Normal completion after VALVE_MOTION_SETTLE_MS (fast solenoid, ~5-10 ms
+ * @brief  Tick the motion settle for OPENING/CLOSING states
+ *         Completion after VALVE_MOTION_SETTLE_MS (fast solenoid, ~5-10 ms
  *         response — see datasheet note at VALVE_MOTION_SETTLE_MS).
- *         Fault if exceeds 2× MotionTimeout (stuck valve sanity bound).
  */
 static void ValveControl_TickMotion(void) {
 	if (fsm_state != VALVE_STATE_OPENING && fsm_state != VALVE_STATE_CLOSING) {
 		return;
 	}
 
-	uint32_t now = HAL_GetTick();
-	uint16_t timeout_s = ProcImg_GetMotionTimeout();
-	uint32_t elapsed = now - motion_start_ms;
+	uint32_t elapsed = HAL_GetTick() - motion_start_ms;
 
-	/* Convert timeout to milliseconds */
-	uint32_t timeout_ms = (uint32_t) timeout_s * 1000UL;
-	uint32_t fault_timeout_ms = timeout_ms * 2;
-
-	/*--- Check for fault (2× timeout — stuck valve) ---*/
-	if (elapsed >= fault_timeout_ms) {
-		DBG_ERROR(VALVE, "Motion fault: elapsed %lu ms > 2x timeout %lu ms",
-				elapsed, fault_timeout_ms);
-
-		fault_active = true;
-		error_register = 0x01; /* Generic error */
-		valve_position = VALVE_POS_UNKNOWN;
-
-		ValveControl_ApplyFailSafe();
-		ValveControl_SetState(VALVE_STATE_FAULT);
-		return;
-	}
-
-	/*--- Check for normal completion (fixed settle — see VALVE_MOTION_SETTLE_MS) ---*/
 	if (elapsed >= VALVE_MOTION_SETTLE_MS) {
 		if (fsm_state == VALVE_STATE_OPENING) {
 			valve_position = VALVE_POS_OPEN;
@@ -389,6 +400,54 @@ static uint16_t ValveControl_GenerateStatusWord(void) {
 }
 
 /**
+ * @brief  Compute the app-owned 0x1001 bits and apply them to BOTH homes.
+ * @note   The stack serves SDO reads of 0x1001 and the EMCY error-register
+ *         byte from gMCOConfig.error_register (mco.c); TPDO2 carries the
+ *         process-image copy. The old code wrote only the PI, so an SDO read
+ *         said 0x01 (stack-set, from its own EMCYs) while TPDO2 showed 0x00 —
+ *         the disagreement recorded in the gateway overrides. Edge-wise
+ *         set/clear so a stack-set generic bit is not stomped each loop; the
+ *         PI copy mirrors the merged register so both homes always agree.
+ *         Same shape as phtemp's SensorControl_UpdateErrorRegister.
+ */
+static void ValveControl_UpdateErrorRegister(void) {
+	uint8_t err = fault_active ? ERREG_GENERIC : 0u;
+
+	uint8_t set_bits = err & (uint8_t) ~last_err_reg;
+	uint8_t clr_bits = last_err_reg & (uint8_t) ~err;
+	if (set_bits) {
+		gMCOConfig.error_register |= set_bits;
+	}
+	if (clr_bits) {
+		gMCOConfig.error_register &= (uint8_t) ~clr_bits;
+	}
+	last_err_reg = err;
+
+	ProcImg_SetErrorRegister(gMCOConfig.error_register);
+}
+
+/**
+ * @brief  ControlWord bit-7 reset: clear 0x1001 bit 0 in both homes (ours
+ *         and the stack's latched copy) and announce EMCY 0x0000 if there was
+ *         anything to clear. Bits 1-7 are never set by this module.
+ */
+static void ValveControl_ClearErrors(void) {
+	bool had_error = (gMCOConfig.error_register != 0u);
+
+	gMCOConfig.error_register &= (uint8_t) ~ERREG_APP_BITS;
+	last_err_reg = 0;
+	ProcImg_SetErrorRegister(gMCOConfig.error_register);
+
+	if (had_error) {
+		DBG_STATE(VALVE, "EMCY 0x0000: error reset (ER now 0x%02X)",
+				gMCOConfig.error_register);
+		(void) MCOP_PushEMCY(EMCY_NO_ERROR, 0, 0, 0, 0, 0);
+	} else {
+		DBG_PRINT_V(VALVE, "Reset with nothing latched: no-op");
+	}
+}
+
+/**
  * @brief  Write StatusWord, ValveState, ErrorRegister to process image
  */
 static void ValveControl_UpdateProcessImage(void) {
@@ -396,7 +455,7 @@ static void ValveControl_UpdateProcessImage(void) {
 
 	ProcImg_SetStatusWord(status_word);
 	ProcImg_SetValveState(valve_position);
-	ProcImg_SetErrorRegister(error_register);
+	ValveControl_UpdateErrorRegister();
 }
 
 /**************************************************************************
@@ -407,28 +466,60 @@ static void ValveControl_UpdateProcessImage(void) {
  * @brief  Called when NMT state changes (via MCO event system)
  */
 static void ValveControl_OnNMTChange(const MCO_Event_t *event) {
-	uint8_t nmt = event->nmt_state;
+	DBG_STATE(CAN, "NMT change: 0x%02X", event->nmt_state);
+	/* Leaving Operational is handled by the NMT gate in ValveControl_Process()
+	 * next loop (ForceClosed + DISABLED); nothing to do here. */
+}
 
-	DBG_STATE(CAN, "NMT change: 0x%02X", nmt);
+/**
+ * @brief  Master heartbeat lost (via MCO event system).
+ * @note   Runs INSIDE the stack's MCOP_ProcessHBCheck, before it forces
+ *         PRE-OP, so the relay is off before TPDOs stop. The stack has
+ *         already pushed EMCY 0x8130 and set ErrorRegister bit 0. Not a
+ *         FAULT (D2): resume = master NMT start + fresh Open edge.
+ */
+static void ValveControl_OnHeartbeatLost(const MCO_Event_t *event) {
+	DBG_ERROR(FAILSAFE, "Heartbeat lost from node %u -> closing; stack forces PRE-OP",
+			event->node_id);
+	ValveControl_ForceClosed("master heartbeat lost");
+}
 
-	if (nmt != NMTSTATE_OP) {
-		/* NMT left Operational — force to DISABLED + fail-safe
-		 * (actual state change handled in ValveControl_Process NMT gate) */
+/**
+ * @brief  Master heartbeat back (stack recovery EMCY, via user_cbdata.c).
+ * @note   The stack set ErrorRegister bit 0 on 0x8130 and never clears it.
+ *         Clear it now if this module itself has nothing to report, so
+ *         0x1001 reads 0x00 again without a ControlWord reset. The PI copy
+ *         mirrors the merged register so TPDO2 and SDO stay in agreement.
+ */
+static void ValveControl_OnHeartbeatRestored(const MCO_Event_t *event) {
+	DBG_STATE(FAILSAFE, "Heartbeat restored from node %u (valve stays CLOSED until NMT start + Open)",
+			event->node_id);
+	if (last_err_reg == 0u) {
+		gMCOConfig.error_register &= (uint8_t) ~ERREG_GENERIC;
+		ProcImg_SetErrorRegister(gMCOConfig.error_register);
 	}
 }
 
 /**
- * @brief  Called when consumer heartbeat is lost (via MCO event system)
+ * @brief  Stack error callback (MCOUSER_FatalError), fatal OR warning class.
+ * @note   D3/D4: the only warning-class codes the stack raises are the
+ *         transmit-FIFO overflows 0x4810-0x4840 (EMCY 0x6100, MSEF 48 xx) —
+ *         a bus symptom, NOT a valve fault, and the stack stays in OP. They
+ *         are logged only; closing an open valve on every TX hiccup would
+ *         be worse than today. Codes >= ERR_FATAL make the stack reset the
+ *         MCU ~10 ms later; dropping the relay first costs nothing.
  */
-static void ValveControl_OnHeartbeatLost(const MCO_Event_t *event) {
-	DBG_ERROR(FAILSAFE, "Heartbeat lost from node 0x%02X!", event->node_id);
+static void ValveControl_OnFatalError(const MCO_Event_t *event) {
+	uint16_t code = event->error_code;
 
-	/* Apply fail-safe position immediately */
-	ValveControl_ApplyFailSafe();
-
-	/* The MCO stack already calls MCO_HandleNMTRequest(NMTMSG_PREOP)
-	 * in MCOUSER_HeartbeatLost(), which will trigger the NMT gate
-	 * in ValveControl_Process() to move to DISABLED state. */
+	if (code >= ERR_FATAL) {
+		DBG_ERROR(FAILSAFE, "MCO fatal error 0x%04X -> closing (stack reset follows)",
+				code);
+		ValveControl_ForceClosed("stack fatal error");
+	} else {
+		DBG_ERROR(CAN, "MCO warning 0x%04X (EMCY 0x6100, TX-overflow class) - no valve action",
+				code);
+	}
 }
 
 /**************************************************************************
