@@ -222,7 +222,7 @@ sees; it needs to be ACTIVE before you pull it). Valve node in OP and OPEN
 | Step | Do | Expect |
 |---|---|---|
 | 1 | producer on; `01 NN`; `RPDO1` `09 00` | OP, open: `TPDO1` `02 06 02` |
-| 2 | **stop the 0x77F producer** | within **2.5 s** of the last 0x77F: relay click OFF; `EMCY` `30 81 01 7F 00 00 00 00` (0x8130, ErrReg 0x01, lost node 127); `HB` → `7F`; `TPDO1`/`TPDO2` stop. RTT: `[FAILSAFE ERROR] Heartbeat lost from node 127 -> closing; stack forces PRE-OP`, `[FAILSAFE] Forced CLOSED (master heartbeat lost): relay ON -> OFF, pos 2 -> 1`, `NMT change: 0x7F`, `NMT not Operational (0x7F) -> DISABLED` |
+| 2 | **stop the 0x77F producer** | within **2.5 s** of the last 0x77F: relay click OFF; `EMCY` `30 81 01 7F 00 00 00 00` (0x8130, ErrReg 0x01, lost node 127); `HB` → `7F`; `TPDO1`/`TPDO2` stop; **green LED blinks (PRE-OP), red double-flashes** until the next 0x77F (fixed 2026-10-01 — the stack's HB-loss path left the green solid). RTT: `[FAILSAFE ERROR] Heartbeat lost from node 127 -> closing; stack forces PRE-OP`, `[FAILSAFE] Forced CLOSED (master heartbeat lost): relay ON -> OFF, pos 2 -> 1`, `NMT change: 0x7F`, `NMT not Operational (0x7F) -> DISABLED` |
 | 3 | `SDO-REQ` `40 42 60 00 00 00 00 00` | `4F 42 60 00 01 00 00 00` — ValveState **1 = Closed**, not the stale 2 |
 | 4 | `SDO-REQ` `40 41 60 00 00 00 00 00` | `4B 41 60 00 00 00 00 00` — DISABLED |
 | 5 | `SDO-REQ` `40 40 60 00 00 00 00 00` | `4B 40 60 00 00 00 00 00` — **ControlWord zeroed** (the buffered 0x0009 is gone) |

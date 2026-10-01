@@ -215,6 +215,13 @@ void MCOUSER_HeartbeatLost (
 	MCO_Event_t ev = { .type = MCO_EVENT_HEARTBEAT_LOST, .node_id = node_id };
 	MCO_Events_Fire(&ev);
 
+#if USE_LEDS
+  // The stack forces PRE-OP below but does not update the CiA 303-3 RUN LED
+  // (only the NMT-command handler does), so the green would stay solid.
+  // Found on the valve bench 2026-10-01; same gap here.
+  gMCOConfig.LEDRun = LED_BLINK;
+#endif
+
   // No NMT request here: the stack sets MY_NMT_STATE = NMTSTATE_PREOP itself
   // right after this callback returns (mcop.c MCOP_ProcessHBCheck) and calls
   // MCOUSER_NMTChange(). Resume = master sends NMT start again.

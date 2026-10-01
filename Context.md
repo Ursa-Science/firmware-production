@@ -8,6 +8,13 @@ depth. Keep this file terse and current; prune stale lines rather than appending
 Last updated: 2026-09-30 (end of day). **main == origin/main == 7f15268**;
 branch build/node-id-parameter fast-forward merged and pushed (can be deleted).
 
+**LED fix 2026-10-01 (uncommitted, valve + phtemp `user_STM32.c`):** the
+stack's HB-loss path forces PRE-OP without updating the CiA 303-3 RUN LED, so
+the green stayed solid after a loss (found on valve node 8). `MCOUSER_HeartbeatLost`
+now sets `gMCOConfig.LEDRun = LED_BLINK`. Pump unaffected (it still calls
+`MCO_HandleNMTRequest(NMTMSG_PREOP)`, which does it); pump image byte-identical.
+Phtemp text +12 B — re-check the green blinks after a loss when next on the bench.
+
 **VALVE MODULE REFACTOR — Phases 1–2 COMMITTED 8b088c8 (2026-10-01).
 Phase 3 Architect regen DONE 2026-10-01 (uncommitted, unflashed):** EDS
 28→21 objects, RevisionNumber **0x00020000** (set in Architect, no
