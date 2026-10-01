@@ -8,8 +8,19 @@ depth. Keep this file terse and current; prune stale lines rather than appending
 Last updated: 2026-09-30 (end of day). **main == origin/main == 7f15268**;
 branch build/node-id-parameter fast-forward merged and pushed (can be deleted).
 
-**VALVE MODULE REFACTOR — Phases 1–2 CODED 2026-09-30, UNCOMMITTED, NOT
-FLASHED, NOT BENCH-VALIDATED.** Plan `docs/VALVE_REFACTOR_PLAN.md` (reviewed
+**VALVE MODULE REFACTOR — Phases 1–2 COMMITTED 8b088c8 (2026-10-01).
+Phase 3 Architect regen DONE 2026-10-01 (uncommitted, unflashed):** EDS
+28→21 objects, RevisionNumber **0x00020000** (set in Architect, no
+hand-edit), files renamed `ValveModule-n09-250kbs.{eds,dcf}` +
+`ValveModule_n09_250kbs_public.h` (old space-named files deleted), pimg.h
+PIMGEND 0x42→**0x2E**, NR_OF_HB_CONSUMER 1 kept, stackinit.h unchanged bar
+the header, every expected-diff item in docs/VALVE_ARCHITECT_REGEN.md
+matched. Built clean: valve-n08/n09 text 34464 / data 160 / bss 8008
+(−60 / −20 / +4 vs Phases 1–2), 7 node-ID bytes apart. NEXT: commit the
+regen, flash, re-run playbook section C (deleted objects abort, 0x1018:03
+= `00 00 02 00`), then Phase 4 gateway cutover (ONE window: EDS/DCF copy +
+delete the `sdo: 0x2300=1` block + overrides/tests + image rebuild).
+Earlier plan state: Plan `docs/VALVE_REFACTOR_PLAN.md` (reviewed
 same day: D3 rewritten — FAULT is contract-only, stack warnings 0x48xx are
 log-only, fatal ≥0x8000 closes then resets; new D9 = a master SDO write to
 0x1016 would disarm the firmware-armed HB consumer, Phase 0 must trace what
